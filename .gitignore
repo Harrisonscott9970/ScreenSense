@@ -1,0 +1,29 @@
+﻿# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Database and models (large files)
+backend/data/screensense.db
+backend/data/models/
+backend/data/synthetic_training.csv
+
+# Node
+node_modules/
+dist/
+
+# Expo
+screensense-app/.expo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

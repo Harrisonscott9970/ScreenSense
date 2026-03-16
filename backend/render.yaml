@@ -1,0 +1,28 @@
+# Render deployment configuration
+# Deploy at: https://render.com
+# Free tier: 512MB RAM, spins down after 15 min inactivity
+
+services:
+  - type: web
+    name: screensense-api
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt && python -m app.ml.train
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: screensense-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: FOURSQUARE_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "*"
+
+databases:
+  - name: screensense-db
+    databaseName: screensense
+    plan: free

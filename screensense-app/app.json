@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "ScreenSense",
+    "slug": "screensense",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#07090F",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#07090F"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.harrisonscott.screensense",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "ScreenSense uses your location to recommend nearby places based on your current mood and stress level.",
+        "NSLocationAlwaysUsageDescription": "ScreenSense uses your location to recommend nearby places based on your current mood and stress level.",
+        "NSHealthShareUsageDescription": "ScreenSense reads sleep and heart rate data to improve stress predictions.",
+        "NSHealthUpdateUsageDescription": "ScreenSense does not write health data.",
+        "NSMotionUsageDescription": "ScreenSense uses motion data to detect activity levels."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.harrisonscott.screensense",
+      "versionCode": 1,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-location"
+    ],
+    "extra": {
+      "apiUrl": "https://screensense-api.onrender.com/api",
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
+}
