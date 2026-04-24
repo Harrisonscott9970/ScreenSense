@@ -666,39 +666,6 @@ Before real deployment, the following improvements would be required:
 
 ## 25. Screenshots
 
-Add screenshots here before final submission.
-
-Recommended screenshots:
-
-```text
-screenshots/home.png
-screenshots/checkin.png
-screenshots/scout.png
-screenshots/recommendations.png
-screenshots/insights.png
-screenshots/control-panel.png
-screenshots/api-docs.png
-```
-
-Example markdown:
-
-```markdown
-### Home Screen
-![Home Screen](screenshots/home.png)
-
-### Mood Check-in
-![Mood Check-in](screenshots/checkin.png)
-
-### Recommendation Output
-![Recommendation Output](screenshots/recommendations.png)
-
-### Control Panel
-![Control Panel](screenshots/control-panel.png)
-
-### FastAPI Documentation
-![FastAPI Docs](screenshots/api-docs.png)
-```
-
 ---
 
 ## 26. Future Work
