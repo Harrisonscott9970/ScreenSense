@@ -121,17 +121,67 @@ def assess_care_level(
     current_mood: str,
     journal_text: str = "",
     manual_crisis_flag: bool = False,
+    clinical_scores: dict = None,
 ) -> CareAssessment:
     """
     Core stepped-care decision engine.
-    Analyses recent history + current state to assign care level.
+    Now integrates PHQ-9, GAD-7, and WHO-5 clinical scores alongside
+    device signals (NICE, 2022 stepped care thresholds).
 
-    This is a decision-support tool only.
-    All outputs should be presented with appropriate clinical disclaimers.
+    clinical_scores dict keys: 'phq9' (0-27), 'gad7' (0-21), 'who5_raw' (0-25)
     """
     risk_factors = []
     protective_factors = []
     level = 1  # default: stable
+
+    # ── CLINICAL ASSESSMENT SCORES (NICE, 2022) ─────────────────
+    # PHQ-9: Kroenke et al. (2001). Journal of General Internal Medicine.
+    # GAD-7: Spitzer et al. (2006). Archives of Internal Medicine.
+    # WHO-5: Bech (1998). WHO Wellbeing Index. NICE threshold < 50.
+    if clinical_scores:
+        phq9     = clinical_scores.get('phq9', -1)
+        gad7     = clinical_scores.get('gad7', -1)
+        who5_raw = clinical_scores.get('who5_raw', -1)
+        who5_pct = who5_raw * 4 if who5_raw >= 0 else -1
+
+        if phq9 >= 0:
+            if phq9 >= 20:
+                risk_factors.append(f"PHQ-9 severe depression (score {phq9}/27) — NICE stepped-care Level 4")
+                level = max(level, 4)
+            elif phq9 >= 15:
+                risk_factors.append(f"PHQ-9 moderately severe depression (score {phq9}/27)")
+                level = max(level, 3)
+            elif phq9 >= 10:
+                risk_factors.append(f"PHQ-9 moderate depression (score {phq9}/27)")
+                level = max(level, 3)
+            elif phq9 >= 5:
+                risk_factors.append(f"PHQ-9 mild depression (score {phq9}/27)")
+                level = max(level, 2)
+            else:
+                protective_factors.append(f"PHQ-9 minimal symptoms (score {phq9}/27)")
+
+        if gad7 >= 0:
+            if gad7 >= 15:
+                risk_factors.append(f"GAD-7 severe anxiety (score {gad7}/21)")
+                level = max(level, 3)
+            elif gad7 >= 10:
+                risk_factors.append(f"GAD-7 moderate anxiety (score {gad7}/21)")
+                level = max(level, 3)
+            elif gad7 >= 5:
+                risk_factors.append(f"GAD-7 mild anxiety (score {gad7}/21)")
+                level = max(level, 2)
+            else:
+                protective_factors.append(f"GAD-7 minimal anxiety (score {gad7}/21)")
+
+        if who5_pct >= 0:
+            if who5_pct < 28:
+                risk_factors.append(f"WHO-5 critically low wellbeing ({who5_pct}/100) — below NICE depression screening threshold")
+                level = max(level, 3)
+            elif who5_pct < 50:
+                risk_factors.append(f"WHO-5 below average wellbeing ({who5_pct}/100)")
+                level = max(level, 2)
+            elif who5_pct >= 72:
+                protective_factors.append(f"WHO-5 good wellbeing ({who5_pct}/100)")
 
     # ── LEVEL 4: Crisis flags ────────────────────────────────
     if manual_crisis_flag:

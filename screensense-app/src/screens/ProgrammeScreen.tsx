@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Animated, TextInput,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
@@ -97,15 +98,14 @@ export default function ProgrammeScreen() {
   const [journalText, setJournalText] = useState('');
 
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('ss_programmes') || '{}');
-      setProgData(saved);
-    } catch {}
+    AsyncStorage.getItem('ss_programmes').then(v => {
+      try { if (v) setProgData(JSON.parse(v)); } catch {}
+    }).catch(() => {});
   }, []);
 
   const save = (data: Record<string, any>) => {
     setProgData(data);
-    try { localStorage.setItem('ss_programmes', JSON.stringify(data)); } catch {}
+    AsyncStorage.setItem('ss_programmes', JSON.stringify(data)).catch(() => {});
   };
 
   const programme = PROGRAMMES.find(p => p.id === active);

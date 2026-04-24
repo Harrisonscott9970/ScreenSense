@@ -3,6 +3,7 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   TextInput, Animated, Easing,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
@@ -204,10 +205,9 @@ function CBTChallenger({ onBack }: { onBack: () => void }) {
           <Text style={s.cbtSub}>{current.sub}</Text>
 
           {current.input !== undefined && (
-            <TextInput style={s.cbtInput}
+            <TextInput style={[s.cbtInput, { minHeight: 80 }]}
               placeholder={current.placeholder} placeholderTextColor={SUB}
               multiline value={current.input} onChangeText={current.onInput}
-              minHeight={80}
             />
           )}
 
@@ -254,11 +254,11 @@ function GratitudeLog({ onBack }: { onBack: () => void }) {
   const save = () => {
     const filled = entries.filter(e => e.trim());
     if (filled.length === 0) return;
-    try {
-      const existing = JSON.parse(localStorage.getItem('ss_gratitude') || '[]');
+    AsyncStorage.getItem('ss_gratitude').then(raw => {
+      const existing = raw ? JSON.parse(raw) : [];
       existing.unshift({ date: new Date().toISOString(), entries: filled });
-      localStorage.setItem('ss_gratitude', JSON.stringify(existing.slice(0, 30)));
-    } catch {}
+      return AsyncStorage.setItem('ss_gratitude', JSON.stringify(existing.slice(0, 30)));
+    }).catch(() => {});
     setSaved(true);
   };
 

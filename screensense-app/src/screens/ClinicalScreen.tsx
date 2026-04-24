@@ -3,6 +3,8 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Animated, ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BASE_URL } from '../services/api';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
@@ -94,7 +96,9 @@ const WHO5 = {
 
 const ASSESSMENTS = [PHQ9, GAD7, WHO5];
 
-export default function ClinicalScreen() {
+interface Props { userId?: string; }
+
+export default function ClinicalScreen({ userId }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [answers, setAnswers] = useState<number[]>([]);
   const [currentQ, setCurrentQ] = useState(0);
@@ -104,10 +108,9 @@ export default function ClinicalScreen() {
   const slideAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('ss_clinical') || '[]');
-      setHistory(saved);
-    } catch {}
+    AsyncStorage.getItem('ss_clinical').then(v => {
+      try { if (v) setHistory(JSON.parse(v)); } catch {}
+    }).catch(() => {});
   }, []);
 
   const assessment = ASSESSMENTS.find(a => a.id === selected);
@@ -126,7 +129,7 @@ export default function ClinicalScreen() {
     });
   };
 
-  const answer = (score: number) => {
+  const answer = async (score: number) => {
     const newAnswers = [...answers, score];
     setAnswers(newAnswers);
     if (currentQ < (assessment?.questions.length || 0) - 1) {
@@ -148,11 +151,28 @@ export default function ClinicalScreen() {
       };
       setResult(resultData);
       try {
-        const saved = JSON.parse(localStorage.getItem('ss_clinical') || '[]');
+        const raw = await AsyncStorage.getItem('ss_clinical');
+        const saved = raw ? JSON.parse(raw) : [];
         saved.unshift(resultData);
-        localStorage.setItem('ss_clinical', JSON.stringify(saved.slice(0, 20)));
+        await AsyncStorage.setItem('ss_clinical', JSON.stringify(saved.slice(0, 20)));
         setHistory(saved.slice(0, 20));
       } catch {}
+
+      // POST to backend so clinical scores inform the care pathway model
+      if (userId) {
+        fetch(`${BASE_URL}/clinical/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id:        userId,
+            assessment_id:  resultData.id,
+            score:          resultData.score,
+            raw_score:      resultData.rawScore,
+            interpretation: interp?.label,
+            answers:        newAnswers,
+          }),
+        }).catch(() => {}); // fire-and-forget — local save already succeeded
+      }
     }
   };
 
@@ -306,7 +326,7 @@ export default function ClinicalScreen() {
       <View style={s.qOptions}>
         {assessment.options.map((opt, i) => (
           <TouchableOpacity key={i} style={[s.qOption, { borderColor: assessment.color + '35' }]}
-            onPress={() => answer(assessment.scores[i])} activeOpacity={0.8}>
+            onPress={() => { answer(assessment.scores[i]).catch(() => {}); }} activeOpacity={0.8}>
             <View style={[s.qOptionDot, { backgroundColor: assessment.color + '30', borderColor: assessment.color + '60' }]}>
               <Text style={[s.qOptionDotTxt, { color: assessment.color }]}>{i}</Text>
             </View>

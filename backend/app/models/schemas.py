@@ -32,7 +32,7 @@ class PlaceRecommendation(BaseModel):
 
 
 class CheckInResponse(BaseModel):
-    entry_id: str
+    entry_id: int
     predicted_stress_score: float
     stress_category: str
     personalised_message: str
@@ -65,3 +65,12 @@ class MLEvaluationResponse(BaseModel):
     class_report: dict
     feature_importances: dict
     training_samples: int
+    cv_f1_mean: Optional[float] = None
+    cv_f1_std: Optional[float] = None
+
+
+class FeedbackRequest(BaseModel):
+    """User thumbs-up/down on a recommendation — feeds personalisation."""
+    entry_id: int
+    helpful: bool
+    user_id: str

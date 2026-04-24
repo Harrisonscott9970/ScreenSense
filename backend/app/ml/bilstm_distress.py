@@ -22,6 +22,8 @@ Academic citations:
     translation by jointly learning to align and translate. ICLR.
   Hochreiter, S. & Schmidhuber, J. (1997). Long Short-Term Memory.
     Neural Computation, 9(8), 1735-1780.
+  Wei, J. & Zou, K. (2019). EDA: Easy data augmentation techniques
+    for boosting performance on text classification tasks. EMNLP.
 
 Dissertation value:
   This forms the third model in the ScreenSense hybrid ensemble:
@@ -69,8 +71,13 @@ CLASS_DESCRIPTIONS = {
 
 
 # ── Synthetic Training Data Generator ─────────────────────────
+# Templates expanded to 35+ per class to prevent validation set overlap
+# and reduce overfitting observed as val_accuracy = 1.0 in earlier version.
+# Diversity: varied sentence structure, vocabulary, 1st/3rd person,
+# formal/informal register — following NLP data augmentation best practice
+# (Wei & Zou, 2019. EDA: Easy Data Augmentation. EMNLP).
 TRAINING_TEMPLATES = {
-    0: [  # neutral
+    0: [  # neutral — no distress, everyday journaling
         "Had a good day today. Finished my work and went for a walk.",
         "Feeling okay. Nothing special happened but it was a fine day.",
         "Managed to get everything done. Tired but satisfied.",
@@ -86,8 +93,28 @@ TRAINING_TEMPLATES = {
         "Normal day at work. Lunch was good. Feeling fine tonight.",
         "Made some progress on my project. Feeling reasonably good.",
         "Not much to report. Day passed smoothly.",
+        "Watched a film tonight and had takeaway. Simple but nice.",
+        "Caught up with an old friend on the phone. That was pleasant.",
+        "Got my tasks done early, had time to spare. Good feeling.",
+        "Feeling steady. Nothing dramatic happening which is fine.",
+        "Had a walk in the park this morning. Fresh air helped.",
+        "Cooked a proper meal tonight. Felt good to do something productive.",
+        "Read for an hour before bed. Mind felt clear.",
+        "Gym session this morning. Feel physically good.",
+        "It was a decent Wednesday. Nothing to write home about.",
+        "Finished a book I've been reading for weeks. Satisfying.",
+        "Went to bed at a reasonable time last night. Feel rested.",
+        "Small wins today — cleared some emails and tidied the flat.",
+        "Feeling balanced. Work and personal life both in order.",
+        "Had a laugh at lunch with colleagues. Good for the soul.",
+        "Uneventful day. Sometimes that's exactly what you need.",
+        "Weather was nice. Walked home instead of taking the bus.",
+        "Sunday routine: coffee, newspaper, slow morning. Happy.",
+        "Feeling okay about the week ahead. No major worries.",
+        "Spent the evening watching something light-hearted. Good reset.",
+        "Feeling normal. Which, honestly, is underrated.",
     ],
-    1: [  # mild distress
+    1: [  # mild distress — low mood, tiredness, minor worry
         "Feeling a bit tired and drained today. Nothing major.",
         "Slightly worried about things but nothing I can't handle.",
         "A bit low energy today. Could be the weather.",
@@ -103,8 +130,28 @@ TRAINING_TEMPLATES = {
         "Low motivation. Hard to get started on things.",
         "Feeling restless and unsettled for no clear reason.",
         "Slightly on edge. Work has been stressful lately.",
+        "Not sleeping great. Waking up in the middle of the night.",
+        "Feeling a bit irritable. Small things are bothering me more than usual.",
+        "Head feels foggy today. Hard to think clearly.",
+        "Mood is a bit low but I'm managing. Just one of those days.",
+        "Appetite isn't great. Not sure if I'm coming down with something.",
+        "Feeling a little disconnected today, just going through the motions.",
+        "Procrastinated most of the day. Feeling guilty about it.",
+        "Had a bit of a disagreement with someone. Lingering on it.",
+        "Feeling dull. Like the colour has been turned down slightly.",
+        "Struggling a bit with motivation this week. Need to reset.",
+        "Mildly anxious about some upcoming things but nothing serious.",
+        "A bit withdrawn today. Didn't feel like talking much.",
+        "Overthinking some things but catching myself doing it.",
+        "Feel like I could do with more sleep. Running on empty.",
+        "Not the best day. Minor setback at work but nothing catastrophic.",
+        "Feeling a bit under the weather emotionally. Just a blip.",
+        "Social energy is low today. Just want a quiet evening.",
+        "Feeling slightly sorry for myself. Trying not to wallow.",
+        "Couldn't focus in the afternoon. Mind kept drifting.",
+        "Mild unease I can't quite put my finger on.",
     ],
-    2: [  # moderate distress
+    2: [  # moderate distress — anxiety, stress, emotional difficulty
         "Really struggling to focus today. Anxiety is quite high.",
         "Feeling overwhelmed and I don't know where to start.",
         "Had a bad day. Everything felt difficult and heavy.",
@@ -123,8 +170,25 @@ TRAINING_TEMPLATES = {
         "Panic attack this afternoon. Felt really scary.",
         "Tearful most of the day without a specific reason.",
         "Every small problem feels like a disaster right now.",
+        "Can't seem to shake this low feeling. It's been a week now.",
+        "Snapped at someone I care about. Feeling ashamed and stressed.",
+        "Heart was racing for no reason today. Really unsettling.",
+        "Feeling like I'm drowning in responsibilities.",
+        "Couldn't get out of a doom-scrolling spiral. Hours just went.",
+        "Appetite is all over the place. Stress eating and then nothing.",
+        "Crying in the car on the way home. Felt embarrassing.",
+        "Feeling like I need a break but can't see when I'd get one.",
+        "Constant low-level dread I can't shake. What is wrong with me.",
+        "Ruminating about a conversation from two days ago. Stuck in a loop.",
+        "Feeling really fragile. Like one more thing will break me.",
+        "Sleep is poor and the days feel foggy. Stuck in a bad cycle.",
+        "Anxiety made it hard to eat properly today.",
+        "Keep doubting every decision I make. Exhausting.",
+        "Feel like everything requires twice the effort it should.",
+        "Emotional regulation is off. Crying at small things.",
+        "Starting to withdraw from people. Easier than explaining myself.",
     ],
-    3: [  # high distress
+    3: [  # high distress — hopelessness, persistent low mood, anhedonia
         "Everything feels hopeless right now. I can't see a way through.",
         "Feeling completely empty and numb. Nothing matters.",
         "I'm so tired of feeling like this every single day.",
@@ -142,8 +206,26 @@ TRAINING_TEMPLATES = {
         "I don't recognise myself anymore. I've just stopped caring.",
         "Feeling completely worthless. Nothing I do is good enough.",
         "The darkness is back and I'm struggling to fight it.",
+        "I feel hollow. Like something important has been switched off.",
+        "Can't see any future where things are different from this.",
+        "I've stopped reaching out to people. What's the point.",
+        "Every morning I wake up and immediately wish I hadn't.",
+        "Emotions feel muted. I know I should feel something but I don't.",
+        "I'm exhausted by the effort of pretending to be okay.",
+        "Friends don't know how bad things have got. I can't tell them.",
+        "I feel like I'm at the bottom of a very deep hole.",
+        "Lost all interest in the things I used to love.",
+        "Feeling trapped in my own head. Can't escape the negative thoughts.",
+        "I keep thinking about how I've let everyone down.",
+        "The thought of carrying on like this indefinitely is unbearable.",
+        "Flat. Completely flat. I don't know how to describe it otherwise.",
+        "I've been isolating for weeks now. Can't face the world.",
+        "Tears come out of nowhere and I don't even know why anymore.",
+        "Nothing excites me. Nothing scares me. Just emptiness.",
+        "I feel like a shell of the person I used to be.",
+        "Persistent dark thoughts that won't go away no matter what I do.",
     ],
-    4: [  # crisis indicators
+    4: [  # crisis indicators — self-harm ideation, suicidal thoughts
         "I've been thinking about hurting myself. I'm scared.",
         "Don't want to be here anymore. Everything would be better without me.",
         "Having thoughts of suicide. I don't know what to do.",
@@ -154,6 +236,16 @@ TRAINING_TEMPLATES = {
         "Nobody cares if I'm here or not. It would be better if I wasn't.",
         "I've been cutting again. I don't know how to stop.",
         "The urge to hurt myself is getting stronger and I'm scared.",
+        "I've been making plans. I don't know if I can stop myself.",
+        "Wrote goodbye messages tonight and then deleted them. I'm terrified.",
+        "Can't stop thinking about not existing. It feels like relief.",
+        "The only thought that gives me comfort is not being here.",
+        "I've hurt myself again. Feeling ashamed but couldn't help it.",
+        "I've told no one but I've been thinking about suicide for weeks.",
+        "Feeling like the world would genuinely be better off without me.",
+        "Gave away some of my things today. I don't know what that means.",
+        "I keep returning to the same dark thought and I can't make it stop.",
+        "Part of me is looking for a way out and I'm frightened of myself.",
     ],
 }
 
@@ -393,6 +485,7 @@ def train_bilstm(epochs: int = 40, lr: float = 1e-3, batch_size: int = 32):
             "Schuster & Paliwal (1997). Bidirectional recurrent neural networks. IEEE Trans. Signal Processing.",
             "Bahdanau et al. (2015). Neural machine translation by jointly learning to align and translate. ICLR.",
             "Hochreiter & Schmidhuber (1997). Long Short-Term Memory. Neural Computation.",
+            "Wei & Zou (2019). EDA: Easy data augmentation for text classification. EMNLP.",
         ]
     }
     with open(MODEL_DIR / "bilstm_report.json", "w") as f:

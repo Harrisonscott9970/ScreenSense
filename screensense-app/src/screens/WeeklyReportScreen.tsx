@@ -3,8 +3,8 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   ActivityIndicator, Animated,
 } from 'react-native';
+import { BASE_URL } from '../services/api';
 
-const BASE = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000/api';
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
       MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
@@ -23,7 +23,7 @@ export default function WeeklyReportScreen({ userId }: WeeklyReportProps) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    fetch(`${BASE}/weekly-report/${userId}`)
+    fetch(`${BASE_URL}/weekly-report/${userId}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         setReport(d);
@@ -35,7 +35,7 @@ export default function WeeklyReportScreen({ userId }: WeeklyReportProps) {
 
   const exportCSV = async () => {
     if (typeof window !== 'undefined') {
-      window.open(`${BASE}/export/${userId}/csv`, '_blank');
+      window.open(`${BASE_URL}/export/${userId}/csv`, '_blank');
     }
   };
 

@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   TextInput, Animated, Switch,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', INDIGO = '#7986CB', TXT = '#EEF0FF',
@@ -36,10 +37,9 @@ export default function SleepScreen() {
   const [screenFree, setScreenFree] = useState(false);
 
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('ss_sleep') || '[]');
-      setEntries(saved);
-    } catch {}
+    AsyncStorage.getItem('ss_sleep').then(v => {
+      try { if (v) setEntries(JSON.parse(v)); } catch {}
+    }).catch(() => {});
   }, []);
 
   const save = () => {
@@ -51,7 +51,7 @@ export default function SleepScreen() {
     };
     const updated = [entry, ...entries.filter(e => e.date !== entry.date)].slice(0, 30);
     setEntries(updated);
-    try { localStorage.setItem('ss_sleep', JSON.stringify(updated)); } catch {}
+    AsyncStorage.setItem('ss_sleep', JSON.stringify(updated)).catch(() => {});
     setNotes('');
   };
 

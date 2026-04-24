@@ -1,36 +1,52 @@
 /**
  * ScreenSense API Service
  * =======================
- * Auto-detects whether running on web (localhost) or mobile device
- * and uses the correct backend URL.
+ * Auto-detects web vs mobile. On mobile, reads the server IP from
+ * AsyncStorage (set in Profile → Settings) so it works without
+ * hard-coding an IP address. Falls back to the bundled default.
  *
- * On mobile, you MUST set your computer's local IP address.
- * Find it with: ipconfig (Windows) → IPv4 Address
- * e.g. 192.168.1.45
+ * To change the server IP on mobile:
+ *   Profile → Settings → Server IP
  */
-
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// ── CHANGE THIS to your computer's local IP address ──────────
-// Run `ipconfig` in PowerShell and use your IPv4 address
-const LOCAL_IP = '192.168.0.16'; // <-- UPDATE THIS
+// Default IP — change this if needed, or set it in Profile → Settings
+export const DEFAULT_LOCAL_IP = '192.168.0.28';
 const PORT = 8000;
-// ─────────────────────────────────────────────────────────────
 
-function getBaseURL(): string {
-  if (Platform.OS === 'web') {
-    return 'http://localhost:8000/api';
-  }
-  // On physical device or simulator, use local network IP
-  return `http://${LOCAL_IP}:${PORT}/api`;
+// Synchronous base URL used by most components
+// (AsyncStorage is async so we expose a mutable ref + updater)
+let _baseUrl = Platform.OS === 'web'
+  ? 'http://localhost:8000/api'
+  : `http://${DEFAULT_LOCAL_IP}:${PORT}/api`;
+
+export function getBaseURL(): string { return _baseUrl; }
+export let BASE_URL = _baseUrl;
+
+/** Call once at app startup to load the user-saved IP */
+export async function initApiUrl(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  try {
+    const savedIp = await AsyncStorage.getItem('ss_server_ip');
+    if (savedIp) {
+      _baseUrl  = `http://${savedIp}:${PORT}/api`;
+      BASE_URL  = _baseUrl;
+    }
+  } catch {}
 }
 
-export const BASE_URL = getBaseURL();
+/** Save a new server IP and update the module-level URL */
+export async function setServerIp(ip: string): Promise<void> {
+  await AsyncStorage.setItem('ss_server_ip', ip.trim());
+  _baseUrl = `http://${ip.trim()}:${PORT}/api`;
+  BASE_URL  = _baseUrl;
+}
 
-// Friendly error messages
+// ── Friendly error messages ────────────────────────────────────
 const FRIENDLY_ERRORS: Record<string, string> = {
-  'Failed to fetch':        'Could not connect. Check your internet connection.',
-  'Network request failed': 'Connection lost. Please try again.',
+  'Failed to fetch':        'Could not connect to server. Check the Server IP in Profile → Settings.',
+  'Network request failed': 'Connection lost. Make sure the backend is running.',
   'TypeError':              'Something went wrong. Please try again.',
 };
 
@@ -59,6 +75,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 }
 
+// ── Type definitions ───────────────────────────────────────────
 export interface CheckInRequest {
   user_id: string;
   mood_label: string;
@@ -94,6 +111,8 @@ export interface CheckInResponse {
   weather_temp_c?: number;
   neighbourhood?: string;
   shap_explanation?: any;
+  distress_class?: string;
+  distress_confidence?: number;
   care_level: number;
   care_label: string;
   care_color: string;
@@ -106,6 +125,7 @@ export interface CheckInResponse {
   ab_comparison?: any;
 }
 
+// ── API methods ────────────────────────────────────────────────
 export const api = {
   checkin: (data: CheckInRequest) =>
     request<CheckInResponse>('/checkin', { method: 'POST', body: JSON.stringify(data) }),
@@ -130,4 +150,26 @@ export const api = {
 
   deleteData: (userId: string) =>
     request<any>(`/data/${userId}`, { method: 'DELETE' }),
+
+  /** Rate a recommendation — feeds the personalisation engine */
+  feedback: (entryId: number, helpful: boolean, userId: string) =>
+    request<any>('/feedback', {
+      method: 'POST',
+      body: JSON.stringify({ entry_id: entryId, helpful, user_id: userId }),
+    }),
+
+  /** Scout message endpoint */
+  scoutMessage: (payload: object) =>
+    request<any>('/scout/message', { method: 'POST', body: JSON.stringify(payload) }),
+
+  /**
+   * Trigger online / incremental retraining of the Random Forest
+   * using accumulated real user entries from the database.
+   * Implements continual learning — Widmer & Kubat (1996).
+   */
+  retrain: (userId?: string) =>
+    request<any>('/retrain', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    }),
 };

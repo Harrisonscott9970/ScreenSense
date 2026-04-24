@@ -1,12 +1,14 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Animated, Easing,
 } from 'react-native';
 import { C, Space, Radius, Font, Shadow } from '../utils/theme';
+import { api } from '../services/api';
 
 interface Props {
   result: any;
   mood: string;
+  userId?: string;
   onReset: () => void;
 }
 
@@ -28,7 +30,21 @@ function useStagger(count: number, delay = 100) {
   return anims;
 }
 
-export default function ResultScreen({ result, mood, onReset }: Props) {
+export default function ResultScreen({ result, mood, userId, onReset }: Props) {
+  const [feedbackSent, setFeedbackSent] = useState<'helpful' | 'not_helpful' | null>(null);
+  const [feedbackMsg, setFeedbackMsg]   = useState('');
+
+  const handleFeedback = async (helpful: boolean) => {
+    if (feedbackSent) return;
+    setFeedbackSent(helpful ? 'helpful' : 'not_helpful');
+    try {
+      const resp = await api.feedback(result.entry_id, helpful, userId || 'anonymous');
+      setFeedbackMsg(resp.message || (helpful ? 'Great — noted!' : 'Noted, we\'ll adjust.'));
+    } catch {
+      setFeedbackMsg(helpful ? 'Thanks for your feedback!' : 'Got it, noted.');
+    }
+  };
+
   const stressColor = result.predicted_stress_score > 0.66 ? C.stressHigh
                     : result.predicted_stress_score > 0.33 ? C.stressMid
                     : C.stressLow;
@@ -38,7 +54,7 @@ export default function ResultScreen({ result, mood, onReset }: Props) {
   const careLevelColors = [C.stressLow, C.stressMid, C.warning, C.stressHigh];
   const careColor = careLevelColors[careLevel - 1] || C.violet;
 
-  const anims = useStagger(7, 120);
+  const anims = useStagger(8, 120);
 
   const AnimBlock = ({ i, children }: { i: number; children: React.ReactNode }) => (
     <Animated.View style={{
@@ -75,8 +91,35 @@ export default function ResultScreen({ result, mood, onReset }: Props) {
           <Text style={[Font.h2, { color: stressColor, marginBottom: Space['2'] }]}>
             {result.stress_category.charAt(0).toUpperCase() + result.stress_category.slice(1)} stress
           </Text>
-          <Text style={[Font.micro, { color: C.textGhost, letterSpacing: 0.3 }]}>
-            Random Forest · Breiman (2001) · scikit-learn
+
+          {/* Confidence interval — split-conformal prediction (Vovk et al. 2005) */}
+          {result.prediction_interval && (() => {
+            const piLo = Math.round(result.prediction_interval.low  * 100);
+            const piHi = Math.round(result.prediction_interval.high * 100);
+            const width = piHi - piLo;
+            const wide = width > 30;                 // >30 pts = low-confidence window
+            const coveragePct = Math.round((result.prediction_interval.coverage ?? 0.9) * 100);
+            return (
+              <View style={s.confRow}>
+                <Text style={[Font.caption, { color: C.textDim }]}>
+                  Likely between <Text style={{ color: stressColor, fontWeight: '700' }}>{piLo}</Text>
+                  {' – '}
+                  <Text style={{ color: stressColor, fontWeight: '700' }}>{piHi}</Text>
+                  {' '}at {coveragePct}% confidence
+                </Text>
+                {wide && (
+                  <Text style={[Font.micro, { color: C.warning, marginTop: 4, textAlign: 'center' }]}>
+                    ⚠ Wider-than-usual range — add a journal entry for a sharper estimate
+                  </Text>
+                )}
+              </View>
+            );
+          })()}
+
+          <Text style={[Font.micro, { color: C.textGhost, letterSpacing: 0.3, marginTop: Space['2'] }]}>
+            {result.ensemble_method && result.rf_stress_score != null
+              ? `RF + BiLSTM ensemble · Torous et al. (2017)`
+              : 'Random Forest · Breiman (2001) · scikit-learn'}
           </Text>
         </View>
       </AnimBlock>
@@ -148,6 +191,18 @@ export default function ResultScreen({ result, mood, onReset }: Props) {
                   </View>
                 );
               })}
+              {result.shap_explanation.narrative && (
+                <View style={s.shapNarrativeBox}>
+                  <Text style={[Font.caption, { color: C.textDim, fontWeight: '600', marginBottom: 4 }]}>
+                    What's driving your score
+                  </Text>
+                  {result.shap_explanation.narrative.split('\n\n').map((line: string, idx: number) => (
+                    <Text key={idx} style={[Font.micro, { color: C.textSub, lineHeight: 18, marginBottom: 4 }]}>
+                      {line.replace(/\*\*/g, '')}
+                    </Text>
+                  ))}
+                </View>
+              )}
               <Text style={[Font.micro, { color: C.textGhost, marginTop: Space['3'], fontStyle: 'italic' }]}>
                 Lundberg & Lee (2017). SHAP — unified model interpretation. NeurIPS.
               </Text>
@@ -200,8 +255,42 @@ export default function ResultScreen({ result, mood, onReset }: Props) {
         </AnimBlock>
       )}
 
-      {/* ── RATIONALE ── */}
+      {/* ── FEEDBACK ── */}
       <AnimBlock i={6}>
+        <View style={s.section}>
+          <Text style={[Font.label, s.sectionLabel]}>Was this helpful?</Text>
+          <View style={s.feedbackCard}>
+            <Text style={[Font.caption, { color: C.textDim, marginBottom: Space['4'], lineHeight: 20 }]}>
+              Your rating trains the AI to give better recommendations — Fogg (2009), content-based filtering (Lops et al., 2011).
+            </Text>
+            {feedbackMsg ? (
+              <View style={s.feedbackConfirm}>
+                <Text style={[Font.body, { color: C.stressLow, fontWeight: '600' }]}>✓ {feedbackMsg}</Text>
+              </View>
+            ) : (
+              <View style={s.feedbackBtns}>
+                <TouchableOpacity
+                  style={[s.fbBtn, s.fbBtnYes, feedbackSent === 'helpful' && s.fbBtnActive]}
+                  onPress={() => handleFeedback(true)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={s.fbBtnTxt}>👍  Helpful</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.fbBtn, s.fbBtnNo, feedbackSent === 'not_helpful' && s.fbBtnActive]}
+                  onPress={() => handleFeedback(false)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.fbBtnTxt, { color: C.textDim }]}>👎  Not for me</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </AnimBlock>
+
+      {/* ── RATIONALE ── */}
+      <AnimBlock i={7}>
         {result.care_level < 4 && (
           <View style={s.section}>
             <Text style={[Font.label, s.sectionLabel]}>Psychological rationale</Text>
@@ -249,6 +338,7 @@ const s = StyleSheet.create({
   ringInner: { width: 160, height: 160, borderRadius: 80, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
   ringFill:  { position: 'absolute', width: 160, height: 160, borderRadius: 80, borderWidth: 3, borderLeftColor: 'transparent', borderBottomColor: 'transparent', transform: [{ rotate: '45deg' }] },
   ringCenter: { alignItems: 'center' },
+  confRow: { alignItems: 'center', marginBottom: Space['2'] },
 
   // Tags
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: Space['6'], marginBottom: Space['4'] },
@@ -273,6 +363,7 @@ const s = StyleSheet.create({
   shapRowHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Space['1'] },
   shapTrack: { height: 4, backgroundColor: C.elevated, borderRadius: 2 },
   shapFill: { height: 4, borderRadius: 2 },
+  shapNarrativeBox: { marginTop: Space['4'], paddingTop: Space['4'], borderTopWidth: 1, borderTopColor: C.line },
 
   // Message
   messageCard: { backgroundColor: C.card, borderRadius: Radius.md, padding: Space['5'], borderLeftWidth: 3, ...Shadow.sm },
@@ -281,6 +372,16 @@ const s = StyleSheet.create({
   placeCard: { backgroundColor: C.card, borderRadius: Radius.md, padding: Space['4'], marginBottom: Space['2'], flexDirection: 'row', gap: Space['3'], alignItems: 'flex-start', ...Shadow.sm },
   placeIconBox: { width: 48, height: 48, borderRadius: 14, backgroundColor: C.elevated, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   placeTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Space['1'] },
+
+  // Feedback
+  feedbackCard: { backgroundColor: C.card, borderRadius: Radius.lg, padding: Space['5'], ...Shadow.sm },
+  feedbackBtns: { flexDirection: 'row', gap: Space['3'] },
+  fbBtn: { flex: 1, borderRadius: Radius.md, padding: Space['4'], alignItems: 'center', borderWidth: 1 },
+  fbBtnYes: { backgroundColor: 'rgba(45,212,191,0.08)', borderColor: 'rgba(45,212,191,0.25)' },
+  fbBtnNo: { backgroundColor: C.elevated, borderColor: C.line },
+  fbBtnActive: { opacity: 0.6 },
+  fbBtnTxt: { fontSize: 14, color: C.stressLow, fontWeight: '600' },
+  feedbackConfirm: { backgroundColor: 'rgba(45,212,191,0.08)', borderRadius: Radius.md, padding: Space['4'], alignItems: 'center' },
 
   // Buttons
   helpBtn: { marginHorizontal: Space['6'], backgroundColor: 'rgba(248,113,113,0.10)', borderRadius: Radius.lg, padding: Space['5'], alignItems: 'center', marginBottom: Space['3'] },

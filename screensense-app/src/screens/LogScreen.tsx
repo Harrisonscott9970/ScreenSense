@@ -5,8 +5,7 @@ import {
 } from 'react-native';
 import { format } from 'date-fns';
 
-const BASE = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000/api';
-const USER = 'user_001';
+import { BASE_URL } from '../services/api';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
@@ -23,7 +22,11 @@ const MOOD_EMO: Record<string, string> = {
 };
 const STRESS_COL = (s: number) => s > 0.66 ? R : s > 0.33 ? A : G;
 
-export default function LogScreen() {
+interface LogScreenProps {
+  userId?: string;
+}
+
+export default function LogScreen({ userId = 'user_001' }: LogScreenProps) {
   const [entries, setEntries] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -31,7 +34,7 @@ export default function LogScreen() {
 
   const load = useCallback(async () => {
     try {
-      const data = await fetch(`${BASE}/entries/${USER}?limit=50`).then(r => r.json());
+      const data = await fetch(`${BASE_URL}/entries/${userId}?limit=50`).then(r => r.json());
       setEntries(Array.isArray(data) ? data : []);
     } catch { setEntries([]); }
     finally { setLoading(false); setRefreshing(false); }

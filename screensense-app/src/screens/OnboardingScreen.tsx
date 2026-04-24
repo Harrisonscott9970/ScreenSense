@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, Animated,
   Dimensions, Easing,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
@@ -84,7 +85,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingProps) {
   const next = () => {
     if (slide < SLIDES.length - 1) goTo(slide + 1);
     else {
-      try { localStorage.setItem('ss_onboarded', 'true'); } catch {}
+      AsyncStorage.setItem('ss_onboarded', 'true').catch(() => {});
       onComplete();
     }
   };
@@ -98,7 +99,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingProps) {
       <View style={[s.bgOrb2, { backgroundColor: current.color + '08' }]} />
 
       {/* Skip */}
-      <TouchableOpacity style={s.skip} onPress={() => { try { localStorage.setItem('ss_onboarded', 'true'); } catch {} onComplete(); }}>
+      <TouchableOpacity style={s.skip} onPress={() => { AsyncStorage.setItem('ss_onboarded', 'true').catch(() => {}); onComplete(); }}>
         <Text style={s.skipTxt}>Skip</Text>
       </TouchableOpacity>
 

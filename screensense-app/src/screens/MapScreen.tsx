@@ -3,8 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity,
   ScrollView, Animated, Linking, Dimensions,
 } from 'react-native';
-
-const BASE = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000/api';
+import { BASE_URL } from '../services/api';  // eslint-disable-line @typescript-eslint/no-unused-vars
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
       MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
@@ -265,19 +264,36 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
           <Text style={s.sheetReason}>{selectedPlace.reason}</Text>
           {selectedPlace.address && <Text style={s.sheetAddr}>📍 {selectedPlace.address}</Text>}
 
-          {/* Confidence + time */}
+          {/* Real AI confidence derived from the conformal prediction interval
+              that was produced for the check-in this place was recommended from. */}
           <View style={s.sheetMeta}>
             <View style={s.sheetMetaItem}>
-              <Text style={s.sheetMetaVal}>High</Text>
-              <Text style={s.sheetMetaLbl}>AI confidence</Text>
+              {(() => {
+                const pi = lastResult?.prediction_interval;
+                const width = pi ? (pi.high - pi.low) : null;
+                let level = '—', col = MUT as string;
+                if (width != null) {
+                  if (width < 0.20)      { level = 'High';   col = G; }
+                  else if (width < 0.35) { level = 'Medium'; col = A; }
+                  else                   { level = 'Low';    col = R; }
+                }
+                return <>
+                  <Text style={[s.sheetMetaVal, { color: col }]}>{level}</Text>
+                  <Text style={s.sheetMetaLbl}>AI confidence</Text>
+                </>;
+              })()}
             </View>
             <View style={s.sheetMetaItem}>
-              <Text style={s.sheetMetaVal}>15–30 min</Text>
-              <Text style={s.sheetMetaLbl}>Time needed</Text>
+              <Text style={s.sheetMetaVal}>
+                {selectedPlace.distance_m != null ? `${selectedPlace.distance_m}m` : '—'}
+              </Text>
+              <Text style={s.sheetMetaLbl}>Distance</Text>
             </View>
             <View style={s.sheetMetaItem}>
-              <Text style={[s.sheetMetaVal, { color: G }]}>Now</Text>
-              <Text style={s.sheetMetaLbl}>Best timing</Text>
+              <Text style={[s.sheetMetaVal, { color: MOOD_COL[currentMood || ''] || V }]}>
+                {currentMood || '—'}
+              </Text>
+              <Text style={s.sheetMetaLbl}>Matched to mood</Text>
             </View>
           </View>
 

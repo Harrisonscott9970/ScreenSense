@@ -11,11 +11,11 @@ export default function PrivacyScreen() {
       </View>
 
       <Section title="1. What ScreenSense is">
-        <Para>ScreenSense is a digital wellbeing research application developed as a final year Computer Science dissertation project at the University of Plymouth. It is not a medical device, clinical service, or regulated health product.</Para>
+        <Para text="ScreenSense is a digital wellbeing research application developed as a final year Computer Science dissertation project at the University of Plymouth. It is not a medical device, clinical service, or regulated health product." />
       </Section>
 
       <Section title="2. Data we collect">
-        <Para>With your consent, ScreenSense may collect:</Para>
+        <Para text="With your consent, ScreenSense may collect:" />
         <Bullet text="Mood check-in data (mood, words, intensity, body areas, thought patterns)" />
         <Bullet text="Optional journal text you choose to write" />
         <Bullet text="Screen time estimates you enter or that are read from your device" />
@@ -26,20 +26,20 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="3. How we use your data">
-        <Para>Your data is used exclusively to:</Para>
+        <Para text="Your data is used exclusively to:" />
         <Bullet text="Generate personalised stress predictions using ML models running locally" />
         <Bullet text="Recommend nearby places matched to your current mood and stress level" />
         <Bullet text="Show you patterns and trends in your own wellbeing over time" />
         <Bullet text="Power the Scout AI companion with your current context" />
-        <Para>Your data is never sold, shared with advertisers, or used for any commercial purpose.</Para>
+        <Para text="Your data is never sold, shared with advertisers, or used for any commercial purpose." />
       </Section>
 
       <Section title="4. Data storage and security">
-        <Para>All personal data is stored in a secure database associated with your account. Location data is used only to query nearby places and is not stored beyond the check-in session. Journal text is processed for sentiment analysis and then stored encrypted.</Para>
+        <Para text="All personal data is stored in a secure database associated with your account. Location data is used only to query nearby places and is not stored beyond the check-in session. Journal text is processed for sentiment analysis and then stored encrypted." />
       </Section>
 
       <Section title="5. Your rights (GDPR)">
-        <Para>Under UK GDPR and the Data Protection Act 2018, you have the right to:</Para>
+        <Para text="Under UK GDPR and the Data Protection Act 2018, you have the right to:" />
         <Bullet text="Access all data we hold about you (Profile → Export data)" />
         <Bullet text="Delete all your data at any time (Profile → Delete all data)" />
         <Bullet text="Withdraw consent for any data type at any time (Profile → Data settings)" />
@@ -47,8 +47,8 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="6. Clinical disclaimer">
-        <Para>ScreenSense is not a clinical service. It does not diagnose, treat, or monitor any medical condition. PHQ-9, GAD-7, and WHO-5 scores are screening tools only — not clinical diagnoses. The Scout AI companion is a conversational support tool, not a therapist.</Para>
-        <Para>If you are experiencing a mental health crisis, please contact:</Para>
+        <Para text="ScreenSense is not a clinical service. It does not diagnose, treat, or monitor any medical condition. PHQ-9, GAD-7, and WHO-5 scores are screening tools only — not clinical diagnoses. The Scout AI companion is a conversational support tool, not a therapist." />
+        <Para text="If you are experiencing a mental health crisis, please contact:" />
         <Bullet text="Samaritans: 116 123 (free, 24/7)" />
         <Bullet text="Crisis Text Line: Text SHOUT to 85258" />
         <Bullet text="NHS 111: 111 (select mental health option)" />
@@ -56,14 +56,14 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="7. Third-party services">
-        <Para>ScreenSense uses the following third-party services:</Para>
+        <Para text="ScreenSense uses the following third-party services:" />
         <Bullet text="Foursquare Places API — for nearby place recommendations (no personal data shared)" />
         <Bullet text="Open-Meteo — for weather data (location only, no personal data)" />
         <Bullet text="Anthropic Claude API — for Scout AI conversations (messages processed, not stored by Anthropic)" />
       </Section>
 
       <Section title="8. Contact">
-        <Para>For any questions about this privacy policy or your data, contact:</Para>
+        <Para text="For any questions about this privacy policy or your data, contact:" />
         <TouchableOpacity onPress={() => Linking.openURL('mailto:h.scott@students.plymouth.ac.uk')}>
           <Text style={s.link}>h.scott@students.plymouth.ac.uk</Text>
         </TouchableOpacity>

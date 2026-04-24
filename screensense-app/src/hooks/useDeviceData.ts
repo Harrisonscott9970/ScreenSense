@@ -1,16 +1,57 @@
+/**
+ * useDeviceData — real device signals for ScreenSense check-in
+ * =============================================================
+ * Collects GPS coordinates with permission handling.
+ * Screen time is tracked at App.tsx level and passed as a prop.
+ * Sleep hours are collected via the check-in slider.
+ */
 import { useState, useEffect } from 'react';
 import * as Location from 'expo-location';
 
 export interface DeviceData {
-  screenTimeHours: number;
-  sleepHours: number;
-  heartRateResting: number | null;
   latitude: number | null;
   longitude: number | null;
-  isLoading: boolean;
+  locationLabel: string;
+  isLoadingLocation: boolean;
+  locationError: string | null;
+  requestLocation: () => Promise<void>;
 }
 
 export function useDeviceData(): DeviceData {
-  const [data, setData] = useState({ screenTimeHours: 4.0, sleepHours: 7.0, heartRateResting: null, latitude: null, longitude: null, isLoading: false });
-  return data;
+  const [latitude, setLatitude]               = useState<number | null>(null);
+  const [longitude, setLongitude]             = useState<number | null>(null);
+  const [locationLabel, setLocationLabel]     = useState('Waiting for location…');
+  const [isLoadingLocation, setIsLoadingLocation] = useState(false);
+  const [locationError, setLocationError]     = useState<string | null>(null);
+
+  const requestLocation = async () => {
+    setIsLoadingLocation(true);
+    setLocationError(null);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setLocationLabel('Location permission denied');
+        setLocationError('Location access was denied. Place recommendations will not be available.');
+        setIsLoadingLocation(false);
+        return;
+      }
+      setLocationLabel('Getting your location…');
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setLatitude(loc.coords.latitude);
+      setLongitude(loc.coords.longitude);
+      setLocationLabel('Location acquired ✓');
+    } catch {
+      setLocationError('Could not get location. Check GPS settings.');
+      setLocationLabel('Location unavailable');
+    } finally {
+      setIsLoadingLocation(false);
+    }
+  };
+
+  // Auto-request on mount
+  useEffect(() => { requestLocation(); }, []);
+
+  return { latitude, longitude, locationLabel, isLoadingLocation, locationError, requestLocation };
 }

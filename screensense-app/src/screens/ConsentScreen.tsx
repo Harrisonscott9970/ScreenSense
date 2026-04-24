@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch, Animated,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
@@ -71,13 +72,18 @@ interface ConsentScreenProps {
 }
 
 export default function ConsentScreen({ onComplete, isSettings = false }: ConsentScreenProps) {
-  const [consents, setConsents] = useState<Record<string, boolean>>(() => {
-    try {
-      const saved = localStorage.getItem('ss_consents');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return Object.fromEntries(DATA_TYPES.map(d => [d.id, d.required]));
-  });
+  const [consents, setConsents] = useState<Record<string, boolean>>(
+    Object.fromEntries(DATA_TYPES.map(d => [d.id, d.required]))
+  );
+
+  // Load saved consents from AsyncStorage on mount
+  useEffect(() => {
+    AsyncStorage.getItem('ss_consents').then(saved => {
+      if (saved) {
+        try { setConsents(JSON.parse(saved)); } catch {}
+      }
+    }).catch(() => {});
+  }, []);
 
   const toggle = (id: string, required: boolean) => {
     if (required) return;
@@ -88,7 +94,7 @@ export default function ConsentScreen({ onComplete, isSettings = false }: Consen
     // Required consents always true
     const final = { ...consents };
     DATA_TYPES.filter(d => d.required).forEach(d => { final[d.id] = true; });
-    try { localStorage.setItem('ss_consents', JSON.stringify(final)); } catch {}
+    AsyncStorage.setItem('ss_consents', JSON.stringify(final)).catch(() => {});
     onComplete(final);
   };
 

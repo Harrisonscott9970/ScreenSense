@@ -119,6 +119,7 @@ def generate_nudge(
     screen_time_hours: float,
     sleep_hours: float,
     hour_of_day: int,
+    feedback_history: dict = None,   # {stress_category: [place_types_rated_helpful]}
 ) -> NudgeOutput:
     # Select message
     key = (stress_category, mood_label.lower())
@@ -139,14 +140,28 @@ def generate_nudge(
     # Select CBT prompt
     cbt = random.choice(CBT_PROMPTS.get(stress_category, CBT_PROMPTS["moderate"]))
 
-    # Select place categories
+    # Select place categories — personalised if feedback history available
     cats = PLACE_CATEGORIES.get(stress_category, PLACE_CATEGORIES["moderate"])
     rationale = cats["rationale"]
 
-    # Weighted mix of primary + secondary
-    primary = cats["primary"][:2]
+    primary   = cats["primary"][:2]
     secondary = cats["secondary"][:1]
-    place_cats = primary + secondary
+
+    # Personalisation: if user has rated certain place types helpful for this
+    # stress level, promote those to the front of the list (content-based filtering)
+    if feedback_history and stress_category in feedback_history:
+        preferred = feedback_history[stress_category]
+        if preferred:
+            # Move preferred types to front, keep primary/secondary as fallback
+            place_cats = list(dict.fromkeys(preferred[:2] + primary + secondary))
+            rationale += (
+                f" Personalised based on your previous feedback — "
+                f"you've found {', '.join(preferred[:2])} most helpful in similar situations."
+            )
+        else:
+            place_cats = primary + secondary
+    else:
+        place_cats = primary + secondary
 
     return NudgeOutput(
         message=message,
