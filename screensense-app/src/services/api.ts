@@ -12,7 +12,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Default IP — change this if needed, or set it in Profile → Settings
-export const DEFAULT_LOCAL_IP = '192.168.0.28';
+export const DEFAULT_LOCAL_IP = '192.168.0.16';
 const PORT = 8000;
 
 // Synchronous base URL used by most components
@@ -58,11 +58,16 @@ function friendlyError(err: any): string {
   return 'Something went wrong. Please try again in a moment.';
 }
 
+const REQUEST_TIMEOUT_MS = 20000;
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       ...options,
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...options?.headers },
     });
     if (!res.ok) {
@@ -71,7 +76,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     }
     return res.json();
   } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error('The server took too long to respond. Please check your connection and try again.');
+    }
     throw new Error(friendlyError(err));
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -172,4 +182,34 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ user_id: userId }),
     }),
+
+  /** Update mutable profile fields (archetype, notifications_on, stress_threshold) */
+  updateProfile: (userId: string, data: Record<string, any>) =>
+    request<any>(`/profile/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  /** Log a completed therapy tool session for efficacy tracking */
+  logIntervention: (userId: string, tool: string, extra?: Record<string, any>) =>
+    request<any>('/intervention/log', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, tool, ...extra }),
+    }),
+
+  /** Get per-tool stress delta stats */
+  interventionEfficacy: (userId: string) =>
+    request<any>(`/intervention/efficacy/${userId}`),
+
+  /** Retrain history log (used by InsightsScreen ML tab) */
+  mlHistory: () =>
+    request<any>('/ml/history'),
+
+  /** BiLSTM distress model evaluation report */
+  mlBilstmReport: () =>
+    request<any>('/ml/bilstm-report'),
+
+  /** Rich ML diagnostics: calibration curves, learning curve, kappa, MCC, CI, etc. */
+  mlDiagnostics: () =>
+    request<any>('/ml/diagnostics'),
 };

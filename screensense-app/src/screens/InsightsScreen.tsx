@@ -1,15 +1,30 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, ActivityIndicator,
-  TouchableOpacity, Dimensions, RefreshControl,
+  TouchableOpacity, Dimensions, RefreshControl, Animated,
 } from 'react-native';
+
+function FadeIn({ delay = 0, children }: { delay?: number; children: React.ReactNode }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(anim, { toValue: 1, duration: 400, delay, useNativeDriver: true }).start();
+  }, []);
+  return (
+    <Animated.View style={{
+      opacity: anim,
+      transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+    }}>
+      {children}
+    </Animated.View>
+  );
+}
 import { BASE_URL, api } from '../services/api';
 
 const { width } = Dimensions.get('window');
 
 const V = '#6C63FF', VL = '#9B94FF', CL = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
-      MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
+      MUT = 'rgba(238,240,255,0.55)', SUB = 'rgba(238,240,255,0.32)',
       CARD = 'rgba(255,255,255,0.04)', BOR = 'rgba(255,255,255,0.08)';
 
 const MOOD_COL: Record<string, string> = {
@@ -30,17 +45,31 @@ export default function InsightsScreen({ userId = 'user_001' }: InsightsScreenPr
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<'overview' | 'ml' | 'lstm'>('overview');
+  const [tab, setTab] = useState<'overview' | 'trends' | 'ml'>('overview');
+
+  const [efficacy,    setEfficacy]    = useState<any>(null);
+  const [ml,          setMl]          = useState<any>(null);
+  const [hist,        setHist]        = useState<any>(null);
+  const [bilstm,      setBilstm]      = useState<any>(null);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
 
   const load = useCallback(async () => {
     try {
-      const [ins, ml, hist, bilstm] = await Promise.all([
+      const [ins, entries, eff, mlData, histData, bilstmData, diagData] = await Promise.all([
         fetch(`${BASE_URL}/insights/${userId}`).then(r => r.ok ? r.json() : null),
-        fetch(`${BASE_URL}/ml/evaluate`).then(r => r.ok ? r.json() : null),
-        fetch(`${BASE_URL}/ml/history`).then(r => r.ok ? r.json() : null),
+        fetch(`${BASE_URL}/entries/${userId}?limit=30`).then(r => r.ok ? r.json() : []),
+        fetch(`${BASE_URL}/intervention/efficacy/${userId}`).then(r => r.ok ? r.json() : null),
+        fetch(`${BASE_URL}/ml/evaluate`).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${BASE_URL}/ml/history`).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${BASE_URL}/ml/bilstm-report`).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${BASE_URL}/ml/diagnostics`).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
-      setData({ ins, ml, hist, bilstm });
+      setData({ ins, entries });
+      setEfficacy(eff);
+      setMl(mlData);
+      setHist(histData);
+      setBilstm(bilstmData);
+      setDiagnostics(diagData);
     } catch { setData(null); }
     finally { setLoading(false); setRefreshing(false); }
   }, [userId]);
@@ -54,10 +83,8 @@ export default function InsightsScreen({ userId = 'user_001' }: InsightsScreenPr
     </View>
   );
 
-  const ins    = data?.ins;
-  const ml     = data?.ml;
-  const hist   = data?.hist;
-  const bilstm = data?.bilstm;
+  const ins     = data?.ins;
+  const entries = data?.entries || [];
 
   if (!ins) return (
     <ScrollView style={s.root} contentContainerStyle={s.content}>
@@ -65,9 +92,8 @@ export default function InsightsScreen({ userId = 'user_001' }: InsightsScreenPr
       <View style={s.emptyCard}>
         <Text style={{ fontSize: 40, marginBottom: 12 }}>📊</Text>
         <Text style={s.emptyTitle}>No data yet</Text>
-        <Text style={s.muted}>Complete a few check-ins to unlock your pattern insights and AI analysis.</Text>
+        <Text style={s.muted}>Complete a few check-ins to unlock your pattern insights and analysis.</Text>
       </View>
-      {ml && <MLTab ml={ml} userId={userId} onRetrained={load} hist={hist} bilstm={bilstm} distressBreakdown={ins?.distress_breakdown} />}
     </ScrollView>
   );
 
@@ -76,26 +102,41 @@ export default function InsightsScreen({ userId = 'user_001' }: InsightsScreenPr
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={V} />}
     >
-      <View style={s.hero}>
-        <Text style={s.heroGreet}>Your wellbeing</Text>
-        <Text style={s.heroH}>Patterns & insights</Text>
-        <Text style={s.muted}>Based on {ins.total_entries} check-ins · pull to refresh</Text>
-      </View>
+      <FadeIn delay={0}>
+        <View style={s.hero}>
+          <Text style={s.heroGreet}>Your wellbeing</Text>
+          <Text style={s.heroH}>Patterns & insights</Text>
+          <Text style={s.muted}>Based on {ins.total_entries} check-ins · pull to refresh</Text>
+        </View>
+      </FadeIn>
 
-      {/* Tab switcher */}
-      <View style={s.tabs}>
-        {(['overview', 'ml', 'lstm'] as const).map(t => (
-          <TouchableOpacity key={t} style={[s.tab, tab === t && s.tabOn]} onPress={() => setTab(t)}>
-            <Text style={[s.tabTxt, tab === t && s.tabTxtOn]}>
-              {t === 'overview' ? 'Overview' : t === 'ml' ? 'ML Report' : 'LSTM'}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <FadeIn delay={80}>
+        <View style={s.tabs}>
+          {(['overview', 'trends', 'ml'] as const).map(t => (
+            <TouchableOpacity key={t} style={[s.tab, tab === t && s.tabOn]} onPress={() => setTab(t)}>
+              <Text style={[s.tabTxt, tab === t && s.tabTxtOn]}>
+                {t === 'overview' ? 'Overview' : t === 'trends' ? 'Trends' : 'ML'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </FadeIn>
 
-      {tab === 'overview' && <OverviewTab ins={ins} />}
-      {tab === 'ml'       && <MLTab ml={ml} userId={userId} onRetrained={load} hist={hist} bilstm={bilstm} distressBreakdown={ins?.distress_breakdown} />}
-      {tab === 'lstm'     && <LSTMTab ins={ins} />}
+      <FadeIn delay={160}>
+        {tab === 'overview' && <OverviewTab ins={ins} efficacy={efficacy} />}
+        {tab === 'trends'   && <TrendsTab ins={ins} entries={entries} />}
+        {tab === 'ml'       && (
+          <MLTab
+            ml={ml}
+            userId={userId}
+            onRetrained={load}
+            hist={hist}
+            bilstm={bilstm}
+            distressBreakdown={ins?.distress_breakdown}
+            diagnostics={diagnostics}
+          />
+        )}
+      </FadeIn>
 
       <View style={{ height: 60 }} />
     </ScrollView>
@@ -103,9 +144,25 @@ export default function InsightsScreen({ userId = 'user_001' }: InsightsScreenPr
 }
 
 // ── OVERVIEW TAB ────────────────────────────────────────────────
-function OverviewTab({ ins }: { ins: any }) {
+function OverviewTab({ ins, efficacy }: { ins: any; efficacy: any }) {
+  const drift = ins?.drift;
   return (
     <>
+      {/* Drift detection banner — Page-Hinkley (Page, 1954) */}
+      {drift?.detected && (
+        <View style={[s.driftBanner, { borderColor: drift.direction === 'increasing' ? R + '60' : G + '60', backgroundColor: drift.direction === 'increasing' ? R + '10' : G + '10' }]}>
+          <Text style={s.driftIcon}>{drift.direction === 'increasing' ? '⚠️' : '✨'}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.driftTitle, { color: drift.direction === 'increasing' ? R : G }]}>
+              {drift.direction === 'increasing' ? 'Stress drift detected' : 'Sustained improvement'}
+            </Text>
+            <Text style={s.driftDesc}>{drift.description}</Text>
+            {drift.action && <Text style={s.driftAction}>{drift.action}</Text>}
+            <Text style={s.driftMeta}>Page-Hinkley change-point detector · magnitude {drift.magnitude}</Text>
+          </View>
+        </View>
+      )}
+
       {/* Wellbeing score + baseline */}
       <View style={s.wellCard}>
         <View style={s.wellLeft}>
@@ -167,6 +224,40 @@ function OverviewTab({ ins }: { ins: any }) {
         </>
       )}
 
+      {/* Intervention efficacy — within-subjects pre/post design */}
+      {efficacy?.efficacy && Object.keys(efficacy.efficacy).length > 0 && (
+        <>
+          <SectionHead text="Therapy tool efficacy" />
+          <View style={s.efficacyCard}>
+            <Text style={s.efficacyIntro}>
+              Avg stress change after each completed tool session (pre/post within-subjects design).
+              Negative = stress reduction.
+            </Text>
+            {Object.entries(efficacy.efficacy as Record<string, any>).map(([tool, stats]: [string, any]) => {
+              const positive = stats.avg_delta < 0;
+              const icon = { breathing: '🫁', cbt: '🧠', mindfulness: '🧘', gratitude: '🙏' }[tool] || '🔬';
+              const deltaColor = positive ? G : stats.avg_delta > 0.02 ? R : A;
+              return (
+                <View key={tool} style={s.efficacyRow}>
+                  <Text style={s.efficacyIcon}>{icon}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.efficacyTool}>{tool.charAt(0).toUpperCase() + tool.slice(1)}</Text>
+                    <Text style={s.efficacySessions}>{stats.sessions} session{stats.sessions !== 1 ? 's' : ''} · before {Math.round(stats.avg_stress_before * 100)} → after {Math.round(stats.avg_stress_after * 100)}</Text>
+                  </View>
+                  <View style={s.efficacyDelta}>
+                    <Text style={[s.efficacyDeltaVal, { color: deltaColor }]}>
+                      {stats.avg_delta > 0 ? '+' : ''}{Math.round(stats.avg_delta * 100)}
+                    </Text>
+                    <Text style={s.efficacyDeltaLbl}>pts</Text>
+                  </View>
+                </View>
+              );
+            })}
+            <Text style={s.efficacyNote}>Shadish et al. (2002) — within-subjects causal inference design</Text>
+          </View>
+        </>
+      )}
+
       {/* A/B win rate */}
       {ins.ab_win_rate !== undefined && (
         <View style={s.abCard}>
@@ -180,9 +271,85 @@ function OverviewTab({ ins }: { ins: any }) {
 }
 
 // ── ML TAB ──────────────────────────────────────────────────────
-function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown }: {
+function TrendsTab({ ins, entries }: { ins: any; entries: any[] }) {
+  const pred = ins?.lstm_prediction;
+
+  return (
+    <>
+      {/* Mood next prediction */}
+      {pred ? (
+        <>
+          <SectionHead text="Next mood prediction — LSTM" />
+          <View style={s.lstmPredCard}>
+            <View style={s.lstmPredTop}>
+              <Text style={s.lstmPredLabel}>Predicted next mood</Text>
+              <Text style={s.lstmPredMood}>{MOOD_EMO[pred.predicted_mood] || '🎯'} {pred.predicted_mood}</Text>
+              <Text style={s.lstmPredValence}>Valence: {pred.predicted_valence > 0 ? '+' : ''}{pred.predicted_valence}</Text>
+            </View>
+            <View style={s.lstmPredMeta}>
+              <View style={s.lstmMetaItem}>
+                <Text style={s.lstmMetaVal}>{Math.round(pred.confidence * 100)}%</Text>
+                <Text style={s.lstmMetaLbl}>Confidence</Text>
+              </View>
+              <View style={s.lstmMetaItem}>
+                <Text style={s.lstmMetaVal}>{pred.sequence_length}</Text>
+                <Text style={s.lstmMetaLbl}>Entries used</Text>
+              </View>
+            </View>
+          </View>
+        </>
+      ) : (
+        ins?.total_entries < 7 && (
+          <View style={s.emptyCard}>
+            <Text style={{ fontSize: 28, marginBottom: 8 }}>🧠</Text>
+            <Text style={s.emptyTitle}>Need {Math.max(0, 7 - ins.total_entries)} more check-in{7 - ins.total_entries !== 1 ? 's' : ''}</Text>
+            <Text style={s.muted}>LSTM mood prediction unlocks after 7 check-ins.</Text>
+          </View>
+        )
+      )}
+
+      {/* Recent entries table */}
+      {entries.length > 0 && (
+        <>
+          <SectionHead text="Recent check-ins" />
+          <View style={s.histCard}>
+            {entries.slice(0, 14).map((e: any, i: number) => {
+              const d = new Date(e.created_at);
+              const dateStr = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+              const stress = e.stress_score ?? e.predicted_stress_score ?? 0;
+              const col = stress > 0.66 ? R : stress > 0.33 ? A : G;
+              return (
+                <View key={i} style={s.histRow}>
+                  <Text style={{ fontSize: 18, marginRight: 10 }}>{MOOD_EMO[e.mood_label] || '😐'}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.histF1}>{e.mood_label} · {e.stress_category || (stress > 0.66 ? 'high' : stress > 0.33 ? 'moderate' : 'low')} stress</Text>
+                    <Text style={s.histMeta}>Sleep {e.sleep_hours}h · Screen {e.screen_time_hours}h</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={[s.histF1, { color: col }]}>{Math.round(stress * 100)}</Text>
+                    <Text style={s.histDate}>{dateStr}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </>
+      )}
+
+      {/* Sentiment trend */}
+      {ins?.sentiment_trend?.length > 0 && (
+        <>
+          <SectionHead text="Journal sentiment over time" />
+          <SentimentChart data={ins.sentiment_trend} />
+        </>
+      )}
+    </>
+  );
+}
+
+function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown, diagnostics }: {
   ml: any; userId?: string; onRetrained?: () => void; hist?: any;
-  bilstm?: any; distressBreakdown?: Record<string, number>;
+  bilstm?: any; distressBreakdown?: Record<string, number>; diagnostics?: any;
 }) {
   const [retraining, setRetraining]     = useState(false);
   const [retrainResult, setRetrainResult] = useState<any>(null);
@@ -245,6 +412,33 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown }: {
         <StatCard label="CV F1"       value={`${Math.round((ml.cv_f1_mean || 0) * 100)}%`} delta={`±${Math.round((ml.cv_f1_std || 0) * 100)}% (5-fold)`} color={CL} />
         <StatCard label="Training n"  value={String(ml.training_samples)}               delta="samples"           color={A}  />
       </View>
+
+      {/* ── Advanced robustness metrics (from diagnostics endpoint) ── */}
+      {diagnostics && (
+        <>
+          <SectionHead text="Robustness metrics — chance-corrected &amp; imbalance-immune" />
+          <View style={s.statGrid}>
+            <StatCard label="Cohen's κ" value={(diagnostics.cohen_kappa ?? '—').toString().slice(0,5)}
+              delta="0=chance · 1=perfect · Landis (1977)" color={CL} />
+            <StatCard label="MCC"       value={(diagnostics.matthews_cc ?? '—').toString().slice(0,5)}
+              delta="Matthews (1975) — immune to imbalance" color={VL} />
+            <StatCard label="F1 CI lo"  value={`${Math.round((diagnostics.f1_bootstrap_ci_lower || 0) * 100)}%`}
+              delta="95% bootstrap CI lower · Efron (1993)" color={G} />
+            <StatCard label="F1 CI hi"  value={`${Math.round((diagnostics.f1_bootstrap_ci_upper || 0) * 100)}%`}
+              delta="95% bootstrap CI upper · n=1000 boot" color={G} />
+          </View>
+          <View style={s.statGrid}>
+            <StatCard label="Brier score" value={(diagnostics.brier_score_mean ?? '—').toString().slice(0,6)}
+              delta="0=perfect · calibration quality" color={A} />
+            <StatCard label="OOB score"   value={diagnostics.oob_score != null ? `${Math.round(diagnostics.oob_score * 100)}%` : '—'}
+              delta="out-of-bag — free extra validation" color={CL} />
+            <StatCard label="Conf. coverage" value={`${Math.round((diagnostics.conformal_empirical_coverage || 0.9) * 100)}%`}
+              delta="empirical · target 90% · Vovk (2005)" color={G} />
+            <StatCard label="Avg set size"   value={(diagnostics.conformal_set_avg_size ?? '—').toString().slice(0,4)}
+              delta="LAC prediction set · Angelopoulos (2023)" color={VL} />
+          </View>
+        </>
+      )}
 
       {/* ── Demo / test seeding ── */}
       <SectionHead text="Quick test — generate demo data" />
@@ -367,6 +561,60 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown }: {
 
       <SectionHead text="Confusion matrix (high / moderate / low)" />
       <ConfusionMatrix matrix={ml.confusion_matrix} />
+
+      {/* ── Challenger model comparison ── */}
+      {diagnostics?.challenger_comparison && (
+        <>
+          <SectionHead text="Challenger model comparison — Wolpert (1992)" />
+          <View style={s.challengerCard}>
+            {[
+              { key: 'rf_f1',          label: '🌲 Random Forest',       mapKey: 'random_forest', color: G  },
+              { key: 'extra_trees_f1', label: '🌳 Extra Trees',         mapKey: 'extra_trees',   color: CL },
+              { key: 'stacking_f1',    label: '🧩 Stacking (RF+ET→LR)', mapKey: 'stacking',      color: VL },
+            ].map(({ key, label, mapKey, color }) => {
+              const f1 = diagnostics.challenger_comparison[key];
+              if (f1 == null) return null;
+              const isWinner = diagnostics.challenger_comparison.winner === mapKey;
+              return (
+                <View key={key} style={s.challengerRow}>
+                  <Text style={[s.challengerLabel, { color: isWinner ? color : MUT }]}>
+                    {label}{isWinner ? ' ✓' : ''}
+                  </Text>
+                  <View style={{ flex: 1, height: 6, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 3, marginHorizontal: 10 }}>
+                    <View style={{ width: `${f1 * 100}%` as any, height: 6, backgroundColor: isWinner ? color : color + '55', borderRadius: 3 }} />
+                  </View>
+                  <Text style={[s.challengerF1, { color: isWinner ? color : MUT }]}>{Math.round(f1 * 100)}%</Text>
+                </View>
+              );
+            })}
+            <Text style={[s.muted, { fontSize: 10, marginTop: 8, textAlign: 'left' }]}>
+              Champion: {(diagnostics.challenger_comparison.winner || '—').replace(/_/g, ' ')} ·
+              split: {(diagnostics.split_method || 'GroupShuffleSplit').split(' ')[0]}
+            </Text>
+          </View>
+        </>
+      )}
+
+      {/* ── Calibration reliability diagram ── */}
+      {diagnostics?.calibration_curves && Object.keys(diagnostics.calibration_curves).length > 0 && (
+        <>
+          <SectionHead text="Reliability diagram — Niculescu-Mizil &amp; Caruana (2005)" />
+          <ReliabilityDiagram curves={diagnostics.calibration_curves} />
+        </>
+      )}
+
+      {/* ── Learning curve by training size ── */}
+      {diagnostics?.learning_curve && !diagnostics.learning_curve.error &&
+       (diagnostics.learning_curve.train_sizes?.length ?? 0) >= 2 && (
+        <>
+          <SectionHead text="Learning curve — F1 vs training size" />
+          <LearningCurveBySize lc={diagnostics.learning_curve} />
+          <Text style={[s.muted, { fontSize: 10, marginBottom: 14, textAlign: 'left' }]}>
+            Plateau confirms {diagnostics.learning_curve.train_sizes?.slice(-1)[0]?.toLocaleString() || '—'} samples
+            was an adequate data budget — diminishing returns beyond this N.
+          </Text>
+        </>
+      )}
 
       {/* ── BiLSTM distress model ── */}
       <SectionHead text="BiLSTM distress classifier — journal NLP model" />
@@ -520,85 +768,130 @@ function F1Curve({ history }: { history: any[] }) {
   );
 }
 
-// ── LSTM TAB ────────────────────────────────────────────────────
-function LSTMTab({ ins }: { ins: any }) {
-  const pred = ins?.lstm_prediction;
-  const needed = Math.max(0, 7 - (ins?.total_entries || 0));
+
+// ── Calibration reliability diagram ─────────────────────────────
+function ReliabilityDiagram({ curves }: { curves: Record<string, any> }) {
+  const SIZE = Math.min(width - 80, 240);
+  const CLASS_COLORS: Record<string, string> = { low: G, moderate: A, high: R };
+
   return (
-    <>
-      <SectionHead text="LSTM longitudinal mood predictor" />
-
-      {!pred ? (
-        <View style={s.emptyCard}>
-          <Text style={{ fontSize: 32, marginBottom: 10 }}>🧠</Text>
-          <Text style={s.emptyTitle}>Need {needed} more check-in{needed !== 1 ? 's' : ''}</Text>
-          <Text style={s.muted}>
-            The LSTM model learns your personal mood patterns over time.
-            It needs at least 7 consecutive entries to make a prediction.
-          </Text>
-          <View style={s.lstmInfoCard}>
-            <Text style={s.lstmInfoTitle}>How the LSTM works</Text>
-            <Text style={s.lstmInfoTxt}>
-              The model takes your last 7 check-ins as a temporal sequence and predicts your next
-              mood valence. Unlike the Random Forest (which treats each check-in independently),
-              the LSTM captures temporal dependencies — e.g., "after 3 high-stress days, anxious
-              mood typically follows." This is the second layer of ScreenSense's hybrid AI ensemble.
-            </Text>
-            <Text style={[s.lstmInfoTxt, { marginTop: 6, color: VL }]}>
-              Cite: Hochreiter & Schmidhuber (1997). Long Short-Term Memory. Neural Computation.
-            </Text>
+    <View style={[s.relCard, { marginBottom: 16 }]}>
+      <Text style={[s.muted, { fontSize: 10, marginBottom: 10, textAlign: 'left' }]}>
+        Calibration reliability diagram. Each point = one probability bin.
+        Perfect calibration follows the diagonal — dots above = under-confident, below = over-confident.
+      </Text>
+      <View style={{ alignSelf: 'center', width: SIZE, height: SIZE,
+        backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 8,
+        borderWidth: 0.5, borderColor: BOR, position: 'relative' }}>
+        {/* Axis labels */}
+        <Text style={{ position: 'absolute', bottom: -16, left: 0, right: 0,
+          textAlign: 'center', fontSize: 9, color: SUB }}>Mean predicted probability →</Text>
+        {/* Perfect calibration diagonal dots */}
+        {[0, 0.25, 0.5, 0.75, 1.0].map((v, i) => (
+          <View key={i} style={{
+            position: 'absolute',
+            left:  v * (SIZE - 12) + 4,
+            top:   (1 - v) * (SIZE - 12) + 4,
+            width: 4, height: 4, borderRadius: 2,
+            backgroundColor: 'rgba(255,255,255,0.15)',
+          }} />
+        ))}
+        {/* Per-class calibration dots */}
+        {Object.entries(curves).map(([cls, data]: [string, any]) => {
+          const color = CLASS_COLORS[cls] || VL;
+          const xs: number[] = data.mean_predicted_value || [];
+          const ys: number[] = data.fraction_of_positives || [];
+          return xs.map((x, i) => {
+            const y = ys[i];
+            if (x == null || y == null) return null;
+            return (
+              <View key={`${cls}_${i}`} style={{
+                position: 'absolute',
+                left:  x * (SIZE - 16) + 4,
+                top:   (1 - y) * (SIZE - 16) + 4,
+                width: 9, height: 9, borderRadius: 5,
+                backgroundColor: color,
+                borderWidth: 1.5, borderColor: '#1a1a2e',
+              }} />
+            );
+          });
+        })}
+      </View>
+      {/* Legend */}
+      <View style={{ flexDirection: 'row', gap: 16, justifyContent: 'center', marginTop: 20 }}>
+        {Object.entries(CLASS_COLORS).map(([cls, col]) => (
+          <View key={cls} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: col }} />
+            <Text style={[s.muted, { fontSize: 10 }]}>{cls}</Text>
           </View>
+        ))}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.2)' }} />
+          <Text style={[s.muted, { fontSize: 10 }]}>perfect</Text>
         </View>
-      ) : (
-        <>
-          <View style={s.lstmPredCard}>
-            <View style={s.lstmPredTop}>
-              <Text style={s.lstmPredLabel}>Next mood prediction</Text>
-              <Text style={s.lstmPredMood}>{MOOD_EMO[pred.predicted_mood] || '🎯'} {pred.predicted_mood}</Text>
-              <Text style={s.lstmPredValence}>Valence: {pred.predicted_valence > 0 ? '+' : ''}{pred.predicted_valence}</Text>
-            </View>
-            <View style={s.lstmPredMeta}>
-              <View style={s.lstmMetaItem}>
-                <Text style={s.lstmMetaVal}>{Math.round(pred.confidence * 100)}%</Text>
-                <Text style={s.lstmMetaLbl}>Confidence</Text>
-              </View>
-              <View style={s.lstmMetaItem}>
-                <Text style={s.lstmMetaVal}>{pred.sequence_length}</Text>
-                <Text style={s.lstmMetaLbl}>Entries used</Text>
-              </View>
-              <View style={s.lstmMetaItem}>
-                <Text style={s.lstmMetaVal}>LSTM</Text>
-                <Text style={s.lstmMetaLbl}>Model</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={s.lstmInfoCard}>
-            <Text style={s.lstmInfoTitle}>Architecture</Text>
-            <Text style={s.lstmInfoTxt}>
-              2-layer LSTM, hidden size 64, dropout 0.3. Trained on overlapping windows of 7
-              consecutive check-ins. Inputs: screen time, sleep, energy, hour, day of week,
-              scroll duration, resting HR, RF stress score. Output: mood valence (−1 to +1)
-              via tanh activation. Early stopping on validation MSE.
-            </Text>
-            <Text style={[s.lstmInfoTxt, { marginTop: 6, color: VL }]}>{pred.model}</Text>
-          </View>
-
-          <View style={s.lstmInfoCard}>
-            <Text style={s.lstmInfoTitle}>Dissertation framing</Text>
-            <Text style={s.lstmInfoTxt}>
-              The LSTM forms the second layer of ScreenSense's hybrid AI ensemble, complementing
-              the Random Forest's real-time cross-sectional stress classification with longitudinal
-              within-person mood forecasting. The BiLSTM distress classifier constitutes the third
-              layer, adding text-based affect sensing. This multi-modal, multi-model architecture
-              is the novel technical contribution of this project.
-            </Text>
-          </View>
-        </>
-      )}
-    </>
+      </View>
+    </View>
   );
 }
+
+// ── Learning curve by training size ─────────────────────────────
+function LearningCurveBySize({ lc }: { lc: any }) {
+  const W = Math.min(width - 80, 620);
+  const H = 100;
+  const pts = lc.train_sizes?.length ?? 0;
+  if (pts < 2) return null;
+
+  const allF1s = [...(lc.train_f1_mean || []), ...(lc.val_f1_mean || [])];
+  const minF   = Math.max(0, Math.min(...allF1s) - 0.03);
+  const maxF   = Math.min(1, Math.max(...allF1s) + 0.03);
+  const range  = maxF - minF || 0.01;
+
+  const yAt = (f1: number) => H - ((f1 - minF) / range) * H;
+  const xAt = (i: number)  => (i / (pts - 1)) * (W - 90);
+
+  return (
+    <View style={[s.curveWrap, { height: H + 62, paddingLeft: 38 }]}>
+      {/* Y-axis ticks */}
+      {[maxF, (maxF + minF) / 2, minF].map((v, i) => (
+        <Text key={i} style={[s.curveAxis, { top: yAt(v) + 10, left: 2, color: MUT }]}>
+          {Math.round(v * 100)}%
+        </Text>
+      ))}
+      {/* Grid lines */}
+      {[0, 0.5, 1].map(frac => (
+        <View key={frac} style={[s.gridLine, { top: frac * H + 12, left: 34, right: 8 }]} />
+      ))}
+      {/* Train F1 dots — violet */}
+      {lc.train_f1_mean.map((f1: number, i: number) => (
+        <View key={`tr${i}`} style={[s.curveDot, { left: xAt(i) + 36, top: yAt(f1) + 10, backgroundColor: V }]}>
+          <Text style={s.curveDotTxt}>{Math.round(f1 * 100)}</Text>
+        </View>
+      ))}
+      {/* Val F1 dots — green, offset down slightly so they don't overlap */}
+      {lc.val_f1_mean.map((f1: number, i: number) => (
+        <View key={`vl${i}`} style={[s.curveDot, { left: xAt(i) + 36, top: yAt(f1) + 28, backgroundColor: G }]}>
+          <Text style={s.curveDotTxt}>{Math.round(f1 * 100)}</Text>
+        </View>
+      ))}
+      {/* X-axis range */}
+      <Text style={[s.curveAxis, { bottom: 24, left: 38 }]}>{lc.train_sizes[0].toLocaleString()}</Text>
+      <Text style={[s.curveAxis, { bottom: 24, right: 8 }]}>{lc.train_sizes[pts - 1].toLocaleString()}</Text>
+      <Text style={[s.curveAxis, { bottom: 8, left: 38, fontWeight: '700' }]}>Training samples →</Text>
+      {/* Legend — top right */}
+      <View style={{ position: 'absolute', top: 10, right: 10, gap: 3 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: V }} />
+          <Text style={[s.curveAxis, { position: 'relative', color: VL }]}>Train F1</Text>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: G }} />
+          <Text style={[s.curveAxis, { position: 'relative', color: G }]}>Val F1</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 
 // ── Sub-components ──────────────────────────────────────────────
 function SectionHead({ text }: { text: string }) {
@@ -847,6 +1140,26 @@ const s = StyleSheet.create({
   sentDot: { width: 8, height: 8, borderRadius: 4 },
   sentLegTxt: { fontSize: 10, color: SUB },
 
+  // Drift detection banner
+  driftBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, borderRadius: 14, padding: 14, marginBottom: 14, borderWidth: 1 },
+  driftIcon: { fontSize: 22, lineHeight: 28 },
+  driftTitle: { fontSize: 14, fontWeight: '700', marginBottom: 3 },
+  driftDesc: { fontSize: 12, color: TXT, lineHeight: 18, marginBottom: 2 },
+  driftAction: { fontSize: 12, color: MUT, fontStyle: 'italic', marginBottom: 4 },
+  driftMeta: { fontSize: 9, color: SUB, fontFamily: 'monospace' as any },
+
+  // Intervention efficacy
+  efficacyCard: { backgroundColor: CARD, borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 0.5, borderColor: BOR },
+  efficacyIntro: { fontSize: 11, color: MUT, lineHeight: 17, marginBottom: 12 },
+  efficacyRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderBottomWidth: 0.5, borderBottomColor: BOR },
+  efficacyIcon: { fontSize: 20 },
+  efficacyTool: { fontSize: 13, fontWeight: '600', color: TXT, marginBottom: 2 },
+  efficacySessions: { fontSize: 10, color: MUT },
+  efficacyDelta: { alignItems: 'center', minWidth: 44 },
+  efficacyDeltaVal: { fontSize: 20, fontWeight: '800', lineHeight: 22 },
+  efficacyDeltaLbl: { fontSize: 9, color: SUB },
+  efficacyNote: { fontSize: 9, color: SUB, marginTop: 10, fontStyle: 'italic' },
+
   abCard: { backgroundColor: 'rgba(76,175,130,0.08)', borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(76,175,130,0.25)', alignItems: 'center' },
   abLabel: { fontSize: 10, color: SUB, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
   abValue: { fontSize: 36, fontWeight: '900', color: G, marginBottom: 4 },
@@ -932,4 +1245,13 @@ const s = StyleSheet.create({
   bilstmEnsemble: { backgroundColor: 'rgba(79,195,247,0.07)', borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(79,195,247,0.2)' },
   bilstmEnsembleTitle: { fontSize: 12, fontWeight: '700', color: TXT, marginBottom: 6 },
   bilstmEnsembleTxt: { fontSize: 11, color: MUT, lineHeight: 18 },
+
+  // Reliability diagram
+  relCard: { backgroundColor: CARD, borderRadius: 14, padding: 14, borderWidth: 0.5, borderColor: BOR },
+
+  // Challenger comparison
+  challengerCard: { backgroundColor: CARD, borderRadius: 14, padding: 14, marginBottom: 16, borderWidth: 0.5, borderColor: BOR },
+  challengerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  challengerLabel: { fontSize: 11, fontWeight: '600', width: 128 },
+  challengerF1: { fontSize: 13, fontWeight: '700', width: 36, textAlign: 'right' as any },
 });

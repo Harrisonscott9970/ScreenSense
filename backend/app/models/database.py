@@ -99,6 +99,9 @@ class UserProfile(Base):
     total_entries    = Column(Integer, default=0)
     streak_days      = Column(Integer, default=0)
 
+    # Archetype
+    archetype        = Column(String(32), nullable=True)
+
     # Settings
     stress_threshold = Column(Float, default=0.65)
     notifications_on = Column(Boolean, default=True)
@@ -119,6 +122,26 @@ class ClinicalResult(Base):
     raw_score      = Column(Integer, nullable=False)
     interpretation = Column(String(64), nullable=True)
     answers        = Column(JSON, default=list)
+
+
+class InterventionLog(Base):
+    """
+    Records each completed therapy tool session.
+    Paired with MoodEntry timestamps to compute intervention efficacy:
+    delta = stress_after − stress_before (negative = reduction = good).
+
+    Academic grounding:
+      Gollwitzer, P.M. (1999). Implementation intentions: Strong effects
+        of simple plans. American Psychologist, 54(7), 493-503.
+    """
+    __tablename__ = "intervention_logs"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id      = Column(String(64), index=True, nullable=False)
+    tool         = Column(String(32), nullable=False)   # breathing | cbt | mindfulness | gratitude
+    completed_at = Column(DateTime, default=datetime.utcnow)
+    duration_mins = Column(Float, nullable=True)
+    cycles       = Column(Integer, nullable=True)        # breathing cycles
 
 
 class RecommendationFeedback(Base):

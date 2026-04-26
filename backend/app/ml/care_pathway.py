@@ -295,10 +295,14 @@ def assess_care_level(
             protective_factors.append("Stress scores consistently low")
 
     else:
-        # No history — base level on current reading only
-        if current_stress_score > 0.7:
+        # No history — base level on current reading only.
+        # Keep thresholds conservative: a single data point is not enough to
+        # escalate beyond Level 2 (NICE, 2022 — pattern needed for Level 3+).
+        if current_stress_score > 0.75:
             level = max(level, 2)
             risk_factors.append("High stress on first check-in")
+        elif current_stress_score > 0.55:
+            level = max(level, 1)  # stay stable; flag it for monitoring only
 
     # Current mood override
     if current_mood in ['low', 'numb'] and current_stress_score > 0.6:

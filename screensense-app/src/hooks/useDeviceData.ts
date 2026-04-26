@@ -41,7 +41,16 @@ export function useDeviceData(): DeviceData {
       });
       setLatitude(loc.coords.latitude);
       setLongitude(loc.coords.longitude);
-      setLocationLabel('Location acquired ✓');
+      // Reverse geocode to get human-readable area name
+      try {
+        const [geo] = await Location.reverseGeocodeAsync(
+          { latitude: loc.coords.latitude, longitude: loc.coords.longitude },
+        );
+        const area = geo?.district || geo?.subregion || geo?.city || geo?.region || 'your area';
+        setLocationLabel(area);
+      } catch {
+        setLocationLabel('Location acquired');
+      }
     } catch {
       setLocationError('Could not get location. Check GPS settings.');
       setLocationLabel('Location unavailable');

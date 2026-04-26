@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, Animated, Linking, Dimensions,
+  ScrollView, Animated, Linking, Dimensions, ActivityIndicator,
 } from 'react-native';
-import { BASE_URL } from '../services/api';  // eslint-disable-line @typescript-eslint/no-unused-vars
+import { BASE_URL } from '../services/api';
+import { useDeviceData } from '../hooks/useDeviceData';
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
-      MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
+      MUT = 'rgba(238,240,255,0.55)', SUB = 'rgba(238,240,255,0.32)',
       CARD = 'rgba(255,255,255,0.05)', BOR = 'rgba(255,255,255,0.09)';
 
 const MOOD_COL: Record<string, string> = {
@@ -89,23 +90,111 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<any>(null);
   const [view, setView] = useState<'routes' | 'map'>('routes');
+  const [livePlaces, setLivePlaces]       = useState<any[]>([]);
+  const [placesLoading, setPlacesLoading] = useState(false);
+  const [placesError, setPlacesError]     = useState<string | null>(null);
   const slideAnim = useRef(new Animated.Value(300)).current;
   const fadeAnim  = useRef(new Animated.Value(0)).current;
+
+  const { latitude, longitude, locationLabel, requestLocation } = useDeviceData();
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
   }, []);
 
-  const openGoogleMaps = (placeName: string) => {
-    const url = `https://www.google.com/maps/search/${encodeURIComponent(placeName + ' London')}`;
-    if (typeof window !== 'undefined') window.open(url, '_blank');
-    else Linking.openURL(url).catch(() => {});
+  const STRESS_CATEGORIES: Record<string, string[]> = {
+    high:     ['Park', 'Garden', 'Library', 'Green Space'],
+    moderate: ['Café', 'Bookshop', 'Gallery', 'Museum'],
+    low:      ['Restaurant', 'Market', 'Social Space', 'Café'],
   };
 
-  const openDirections = (placeName: string) => {
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(placeName + ' London')}`;
-    if (typeof window !== 'undefined') window.open(url, '_blank');
-    else Linking.openURL(url).catch(() => {});
+  const REASONS: Record<string, Record<string, string>> = {
+    Park:         { high:'Natural environments lower cortisol — Ulrich SRT (1984)', moderate:'Green space for gentle recovery', low:'Enjoy nature while your mood is positive' },
+    Library:      { high:'Quiet structured space for mental decompression', moderate:'Low-stimulation reading space', low:'Calm enrichment activity' },
+    Café:         { high:'Warm, low-pressure space to decompress', moderate:'Mild social stimulation — Ulrich (1984)', low:'Social reward for positive mood' },
+    Gallery:      { high:'Aesthetic calm reduces arousal', moderate:'Aesthetic engagement supports mood regulation', low:'Cultural exploration — Fredrickson (2001)' },
+    Restaurant:   { low:'Social reward aligns with positive mood state', moderate:'Warm social setting', high:'Grounding in a familiar environment' },
+    Market:       { low:'Exploratory environment — Fredrickson Broaden-Build (2001)', moderate:'Light social stimulation', high:'Brief purposeful outing' },
+    Bookshop:     { moderate:'Low-stimulation browsing — Kaplan ART (1995)', high:'Quiet refuge with attentional restoration', low:'Enrichment during positive state' },
+    Museum:       { moderate:'Cultural engagement with attentional restoration', high:'Calm, structured indoor environment', low:'Exploratory cultural activity' },
+  };
+
+  const ICONS: Record<string, string> = {
+    Park:'🌿', Garden:'🌸', Library:'📚', Museum:'🏛', Gallery:'🖼',
+    Café:'☕', Bookshop:'📖', Cinema:'🎬', Restaurant:'🍽', Market:'🛍',
+    'Social Space':'🤝', 'Green Space':'🍃', 'Nature Reserve':'🌲',
+  };
+
+  const fetchPlaces = useCallback(async (lat: number, lon: number) => {
+    setPlacesLoading(true);
+    setPlacesError(null);
+    try {
+      const stressCat = currentStress && currentStress > 0.66 ? 'high'
+                      : currentStress && currentStress > 0.33 ? 'moderate' : 'low';
+
+      // Backend handles Google Maps → Overpass → defaults chain
+      const url = `${BASE_URL}/places?lat=${lat}&lon=${lon}&mood=${encodeURIComponent(currentMood || 'calm')}&stress_category=${stressCat}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`places ${res.status}`);
+      const data = await res.json();
+
+      const raw: any[] = data.places || [];
+      if (raw.length > 0) {
+        // Backend already has reason text; enrich icon if missing
+        setLivePlaces(raw.map((p: any) => ({
+          ...p,
+          icon: p.icon || ICONS[p.type] || '📍',
+        })));
+      } else {
+        // Empty — show search-link cards for the target categories
+        const targetCats = STRESS_CATEGORIES[stressCat] || STRESS_CATEGORIES.moderate;
+        setLivePlaces(targetCats.slice(0, 3).map(cat => ({
+          name: `${cat} near you`,
+          type: cat,
+          icon: ICONS[cat] || '📍',
+          reason: (REASONS[cat] || {})[stressCat] || 'Recommended for your current affect profile',
+          address: 'Tap to open Google Maps',
+          distance_m: null,
+        })));
+      }
+    } catch {
+      setPlacesError('Could not load nearby places — tap retry.');
+      const stored = lastResult?.place_recommendations;
+      if (stored) {
+        setLivePlaces(Array.isArray(stored) ? stored
+          : (typeof stored === 'string' ? JSON.parse(stored) : []));
+      }
+    } finally {
+      setPlacesLoading(false);
+    }
+  }, [currentMood, currentStress, lastResult]);
+
+  useEffect(() => {
+    if (latitude && longitude) {
+      fetchPlaces(latitude, longitude);
+    }
+  }, [latitude, longitude, fetchPlaces]);
+
+  const openGoogleMaps = (placeType: string) => {
+    let url: string;
+    if (latitude && longitude) {
+      // Search for place type near the user's actual coordinates
+      url = `https://www.google.com/maps/search/${encodeURIComponent(placeType)}/@${latitude},${longitude},15z`;
+    } else {
+      url = `https://www.google.com/maps/search/${encodeURIComponent(placeType)}`;
+    }
+    Linking.openURL(url).catch(() => {});
+  };
+
+  const openDirections = (placeNameOrAddress: string) => {
+    let url: string;
+    if (latitude && longitude) {
+      // Navigate to place type search near user; fall back to address if it's a real one
+      url = `https://www.google.com/maps/dir/?api=1&origin=${latitude},${longitude}&destination=${encodeURIComponent(placeNameOrAddress)}`;
+    } else {
+      url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(placeNameOrAddress)}`;
+    }
+    Linking.openURL(url).catch(() => {});
   };
 
   const selectPlace = (place: any) => {
@@ -129,7 +218,7 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
     ? currentStress > 0.66 ? R : currentStress > 0.33 ? A : G
     : V;
 
-  const places = lastResult?.place_recommendations || [];
+  const places = livePlaces;
 
   return (
     <Animated.View style={[s.root, { opacity: fadeAnim }]}>
@@ -150,6 +239,22 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
           ) : (
             <Text style={s.headerSub}>Complete a check-in to get personalised routes</Text>
           )}
+          <TouchableOpacity
+            style={s.locationBar}
+            onPress={!latitude ? requestLocation : undefined}
+            activeOpacity={latitude ? 1 : 0.7}
+          >
+            <Text style={s.locationBarTxt}>
+              {latitude
+                ? `📍 ${locationLabel}`
+                : locationLabel === 'Location permission denied'
+                  ? '❌ Location denied — tap to retry'
+                  : '⏳ Getting location… tap to retry'}
+            </Text>
+            {latitude && (
+              <Text style={s.locationBarCoords}>{latitude.toFixed(4)}, {longitude?.toFixed(4)}</Text>
+            )}
+          </TouchableOpacity>
         </View>
         {currentStress !== undefined && (
           <View style={[s.stressBadge, { borderColor: stressColor + '55', backgroundColor: stressColor + '15' }]}>
@@ -211,17 +316,68 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
           </>
         ) : (
           <>
-            {/* Nearby places from last check-in */}
-            <SectionHead text="From your last check-in" color={V} />
+            {/* AI context banner — shows mood/stress state that drove recommendations */}
+            {currentMood && places.length > 0 && (
+              <View style={s.aiContextBanner}>
+                <Text style={s.aiContextTxt}>
+                  AI matched to your <Text style={{ color: MOOD_COL[currentMood] || V, fontWeight: '700' }}>{currentMood}</Text> mood
+                  {currentStress !== undefined && (
+                    <Text style={{ color: stressColor }}> · stress {Math.round(currentStress * 100)}/100</Text>
+                  )}
+                </Text>
+                <Text style={s.aiContextSub}>Places chosen using environmental psychology (Ulrich, Kaplan, Fredrickson)</Text>
+              </View>
+            )}
 
-            {places.length > 0 ? (
+            {/* Live nearby places — fetched fresh from GPS */}
+            <SectionHead text="Nearby places for your mood" color={V} />
+
+            {!latitude && !placesLoading && (
+              <View style={s.emptyCard}>
+                <Text style={{ fontSize: 32, marginBottom: 10 }}>📍</Text>
+                <Text style={s.emptyTitle}>Location needed</Text>
+                <Text style={s.emptyTxt}>Allow location access to see real places near you.</Text>
+                <TouchableOpacity
+                  style={[s.googleMapsBtn, { marginTop: 12, marginBottom: 0 }]}
+                  onPress={requestLocation}
+                >
+                  <Text style={s.googleMapsBtnTxt}>Enable location →</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {placesLoading && (
+              <View style={[s.emptyCard, { paddingVertical: 32 }]}>
+                <ActivityIndicator color={V} size="large" style={{ marginBottom: 12 }} />
+                <Text style={s.emptyTxt}>Finding places near you…</Text>
+              </View>
+            )}
+
+            {!placesLoading && placesError && places.length === 0 && (
+              <View style={s.emptyCard}>
+                <Text style={{ fontSize: 28, marginBottom: 8 }}>⚠️</Text>
+                <Text style={s.emptyTitle}>Could not load places</Text>
+                <Text style={s.emptyTxt}>{placesError}</Text>
+                <TouchableOpacity
+                  style={[s.googleMapsBtn, { marginTop: 12, marginBottom: 0 }]}
+                  onPress={() => latitude && longitude && fetchPlaces(latitude, longitude)}
+                >
+                  <Text style={s.googleMapsBtnTxt}>Retry →</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {!placesLoading && places.length > 0 ? (
               places.map((p: any, i: number) => (
                 <TouchableOpacity key={i} style={s.placeCard} onPress={() => selectPlace(p)} activeOpacity={0.8}>
                   <View style={s.placeIconWrap}><Text style={{ fontSize: 26 }}>{p.icon}</Text></View>
                   <View style={{ flex: 1 }}>
                     <View style={s.placeRow}>
                       <Text style={s.placeName}>{p.name}</Text>
-                      {p.distance_m != null && <Text style={s.placeDist}>{p.distance_m}m</Text>}
+                      {p.distance_m != null
+                        ? <Text style={s.placeDist}>{p.distance_m}m</Text>
+                        : <Text style={s.placeDistEst}>type match</Text>
+                      }
                     </View>
                     <Text style={s.placeType}>{p.type}</Text>
                     <Text style={s.placeReason}>{p.reason}</Text>
@@ -229,23 +385,22 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
                   <Text style={s.placeArrow}>›</Text>
                 </TouchableOpacity>
               ))
-            ) : (
-              <View style={s.emptyCard}>
-                <Text style={{ fontSize: 36, marginBottom: 10 }}>📍</Text>
-                <Text style={s.emptyTitle}>No places yet</Text>
-                <Text style={s.emptyTxt}>Complete a check-in to get AI-recommended places near you based on your mood and stress level.</Text>
-              </View>
-            )}
+            ) : null}
 
             {/* Stylised map */}
             <SectionHead text="Area overview" color={SUB} />
             <View style={s.mapWrap}>
-              <StylisedMap places={places} mood={currentMood} />
+              <StylisedMap places={places} mood={currentMood} locationLabel={locationLabel} />
             </View>
 
-            <TouchableOpacity style={s.googleMapsBtn} onPress={() => openGoogleMaps('parks and quiet spaces')}>
-              <Text style={s.googleMapsBtnTxt}>🗺 Open Google Maps nearby →</Text>
-            </TouchableOpacity>
+            {!placesLoading && latitude && (
+              <TouchableOpacity style={s.googleMapsBtn}
+                onPress={() => openGoogleMaps(
+                  places.length > 0 ? places[0].type : 'parks and quiet spaces'
+                )}>
+                <Text style={s.googleMapsBtnTxt}>🗺 Find {places.length > 0 ? places[0].type : 'places'} near you →</Text>
+              </TouchableOpacity>
+            )}
           </>
         )}
 
@@ -382,7 +537,7 @@ const rc = StyleSheet.create({
   findBtnTxt: { color: '#fff', fontSize: 13, fontWeight: '700' },
 });
 
-function StylisedMap({ places, mood }: { places: any[]; mood?: string }) {
+function StylisedMap({ places, mood, locationLabel }: { places: any[]; mood?: string; locationLabel?: string }) {
   const stressColor = mood === 'anxious' || mood === 'stressed' ? R : mood === 'calm' || mood === 'content' ? G : C;
   return (
     <View style={sm.wrap}>
@@ -409,7 +564,7 @@ function StylisedMap({ places, mood }: { places: any[]; mood?: string }) {
         );
       })}
       <View style={sm.areaLbl}>
-        <Text style={sm.areaLblTxt}>Central London</Text>
+        <Text style={sm.areaLblTxt}>{locationLabel || 'Your area'}</Text>
       </View>
     </View>
   );
@@ -451,11 +606,16 @@ const s = StyleSheet.create({
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 24, paddingBottom: 40, maxWidth: 680, alignSelf: 'center' as any, width: '100%' },
 
+  aiContextBanner: { backgroundColor: 'rgba(108,99,255,0.08)', borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(108,99,255,0.2)' },
+  aiContextTxt: { fontSize: 13, color: TXT, fontWeight: '500', marginBottom: 3 },
+  aiContextSub: { fontSize: 10, color: MUT, fontStyle: 'italic' },
+
   placeCard: { backgroundColor: CARD, borderRadius: 14, padding: 14, marginBottom: 8, borderWidth: 0.5, borderColor: BOR, flexDirection: 'row', gap: 12, alignItems: 'center' },
   placeIconWrap: { width: 46, height: 46, borderRadius: 13, backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   placeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
   placeName: { fontSize: 14, fontWeight: '700', color: TXT, flex: 1 },
   placeDist: { fontSize: 11, color: C, fontWeight: '600' },
+  placeDistEst: { fontSize: 10, color: MUT, fontStyle: 'italic' },
   placeType: { fontSize: 10, color: V, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 3, fontWeight: '600' },
   placeReason: { fontSize: 12, color: MUT, lineHeight: 17 },
   placeArrow: { fontSize: 20, color: SUB },
@@ -487,4 +647,8 @@ const s = StyleSheet.create({
   directionsBtnTxt: { color: '#fff', fontSize: 14, fontWeight: '700' },
   mapsBtn: { backgroundColor: CARD, borderRadius: 14, padding: 14, alignItems: 'center', borderWidth: 1, borderColor: BOR },
   mapsBtnTxt: { color: MUT, fontSize: 14, fontWeight: '600' },
+
+  locationBar: { marginTop: 8, marginBottom: 2, backgroundColor: 'rgba(108,99,255,0.08)', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: 'rgba(108,99,255,0.18)' },
+  locationBarTxt: { fontSize: 12, color: VL, fontWeight: '600' },
+  locationBarCoords: { fontSize: 10, color: MUT, marginTop: 1 },
 });

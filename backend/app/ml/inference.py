@@ -31,17 +31,7 @@ from functools import lru_cache
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 from app.config import settings
-
-FEATURES = [
-    'screen_time_hours',
-    'sleep_hours',
-    'energy_level',
-    'hour_of_day',
-    'day_of_week',
-    'scroll_session_mins',
-    'heart_rate_resting',
-    'mood_valence'
-]
+from app.ml.synthetic_data import FEATURES
 
 MOOD_VALENCE = {
     'anxious': -0.70, 'stressed': -0.60, 'low': -0.80,
@@ -94,10 +84,31 @@ def build_feature_vector(
     day_of_week: int,
     scroll_session_mins: float,
     heart_rate_resting: float,
-    mood_label: str
+    mood_label: str,
+    weather_temp_c: float = 15.0,
 ) -> np.ndarray:
+    """
+    Build the 14-feature vector that matches the training data schema.
+
+    New in v3: cyclical time encodings (sin/cos) prevent the RF treating
+    midnight and noon as maximally distant (Waskom, 2018); screen×sleep
+    interaction captures synergistic amplification (Levenson et al., 2017);
+    weather_temp_c adds the real-phone environmental signal.
+    """
     valence = MOOD_VALENCE.get(mood_label.lower(), 0.0)
-    hr = heart_rate_resting if heart_rate_resting else 68.0  # population mean fallback
+    hr = heart_rate_resting if heart_rate_resting else 68.0
+
+    # Cyclical time encodings (Waskom, 2018)
+    hour_sin = float(np.sin(2 * np.pi * hour_of_day / 24))
+    hour_cos = float(np.cos(2 * np.pi * hour_of_day / 24))
+    day_sin  = float(np.sin(2 * np.pi * day_of_week / 7))
+    day_cos  = float(np.cos(2 * np.pi * day_of_week / 7))
+
+    # Screen × sleep interaction (Levenson et al., 2017)
+    screen_sleep_interaction = float(
+        max(0.0, (screen_time_hours / 10.0) * max(0.0, (8 - sleep_hours) / 8.0)) * 0.15
+    )
+
     vector = np.array([[
         screen_time_hours,
         sleep_hours,
@@ -106,7 +117,13 @@ def build_feature_vector(
         day_of_week,
         scroll_session_mins,
         hr,
-        valence
+        valence,
+        hour_sin,
+        hour_cos,
+        day_sin,
+        day_cos,
+        screen_sleep_interaction,
+        weather_temp_c,
     ]])
     return vector
 
@@ -119,10 +136,13 @@ def predict_stress(feature_vector: np.ndarray) -> dict:
     Breiman (2001): RF probability estimates are well-calibrated for
     balanced datasets.
     """
+    import pandas as pd
     model = load_model()
+    # Pass as DataFrame to avoid feature-name warning from StandardScaler
+    fv_df = pd.DataFrame(feature_vector, columns=FEATURES)
     classes = model.classes_
-    proba = model.predict_proba(feature_vector)[0]
-    label = model.predict(feature_vector)[0]
+    proba = model.predict_proba(fv_df)[0]
+    label = model.predict(fv_df)[0]
 
     proba_dict = dict(zip(classes, proba.tolist()))
 
@@ -156,6 +176,20 @@ def predict_stress(feature_vector: np.ndarray) -> dict:
             "coverage": round(1.0 - float(alpha), 2),
             "method":   "split-conformal",
         }
+
+    # LAC conformal prediction SET (Angelopoulos & Bates, 2023 §3).
+    # The set includes every class y where P̂(y | x) ≥ 1 − q̂_set.
+    # This gives a distribution-free guarantee: P(true class ∈ set) ≥ 1 − α.
+    q_hat_set = report.get("conformal_set_q_hat")
+    if q_hat_set is not None:
+        classes_list = list(classes)
+        threshold    = 1.0 - float(q_hat_set)
+        pred_set     = [c for j, c in enumerate(classes_list) if proba[j] >= threshold]
+        if not pred_set:                           # always return at least the argmax class
+            pred_set = [classes_list[int(np.argmax(proba))]]
+        result["prediction_set"]      = pred_set
+        result["prediction_set_size"] = len(pred_set)
+
     return result
 
 

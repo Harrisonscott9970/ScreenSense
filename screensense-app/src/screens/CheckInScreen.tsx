@@ -17,10 +17,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  Animated, ActivityIndicator, ScrollView, Easing, Pressable,
+  Animated, ActivityIndicator, ScrollView, Easing, Pressable, Keyboard,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { C, Space, Radius, Font, Shadow } from '../utils/theme';
 import { api } from '../services/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+let Haptics: any = null;
+try { Haptics = require('expo-haptics'); } catch {}
 import { useDeviceData } from '../hooks/useDeviceData';
 import ResultScreen from './ResultScreen';
 
@@ -93,6 +97,7 @@ export default function CheckInScreen({
   const opacity    = useRef(new Animated.Value(1)).current;
   const translateY = useRef(new Animated.Value(0)).current;
   const moodScales = useRef(MOODS.map(() => new Animated.Value(1))).current;
+  const ctaScale   = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.timing(progress, {
@@ -102,6 +107,11 @@ export default function CheckInScreen({
   }, [step]);
 
   const transition = (next: number) => {
+    // CTA pulse on advance
+    Animated.sequence([
+      Animated.spring(ctaScale, { toValue: 0.95, useNativeDriver: true, tension: 400, friction: 10 }),
+      Animated.spring(ctaScale, { toValue: 1,    useNativeDriver: true, tension: 400, friction: 10 }),
+    ]).start();
     Animated.parallel([
       Animated.timing(opacity,    { toValue: 0,   duration: 150, useNativeDriver: true }),
       Animated.timing(translateY, { toValue: -12, duration: 150, useNativeDriver: true }),
@@ -117,6 +127,7 @@ export default function CheckInScreen({
 
   const selectMood = (label: string, idx: number) => {
     setMood(label);
+    Haptics?.impactAsync(Haptics.ImpactFeedbackStyle?.Light);
     MOODS.forEach((_, i) => {
       Animated.spring(moodScales[i], {
         toValue: i === idx ? 1.06 : 0.94,
@@ -148,6 +159,16 @@ export default function CheckInScreen({
       });
       setResult(res);
       onComplete?.(mood, res.predicted_stress_score, res);
+      // Auto-retrain every 10th check-in (continual learning — Widmer & Kubat 1996)
+      try {
+        const key = `ss_checkin_count_${userId}`;
+        const prev = parseInt((await AsyncStorage.getItem(key)) || '0', 10);
+        const next = prev + 1;
+        await AsyncStorage.setItem(key, String(next));
+        if (next % 10 === 0) {
+          api.retrain(userId).catch(() => {});
+        }
+      } catch {}
     } catch (e: any) {
       setError(e.message || 'Could not reach the backend. Make sure it\'s running on port 8000.');
     } finally {
@@ -160,6 +181,7 @@ export default function CheckInScreen({
       result={result}
       mood={mood!}
       userId={userId}
+      onNavigate={onNavigate}
       onReset={() => {
         setStep(0); setMood(null); setResult(null);
         setJournal(''); setBody([]); setThoughts([]);
@@ -287,41 +309,41 @@ export default function CheckInScreen({
           <View style={s.step}>
             <Text style={[Font.label, s.stepLabel]}>Self-report intensity</Text>
             <Text style={[Font.h1, s.stepTitle]}>How intense{'\n'}is this feeling?</Text>
+            <Text style={[Font.body, s.stepBody]}>Tap a number — 1 is barely noticeable, 10 is overwhelming.</Text>
 
-            <View style={s.bigNumberRow}>
-              <Text style={[Font.display, { color: sel?.color || C.violet, fontSize: 80, lineHeight: 84 }]}>
-                {intensity}
-              </Text>
-              <Text style={[Font.body, { color: C.textDim, fontSize: 28, marginTop: 32 }]}>/10</Text>
-            </View>
-
-            <View style={s.segmentRow}>
-              {Array.from({ length: 10 }, (_, i) => i + 1).map(n => (
-                <TouchableOpacity key={n}
-                  style={[s.segment, { backgroundColor: intensity >= n ? (sel?.color || C.violet) : C.elevated }]}
-                  onPress={() => setIntensity(n)}
-                />
-              ))}
-            </View>
-            <View style={s.segLabels}>
-              <Text style={[Font.caption, { color: C.textDim }]}>Mild</Text>
-              <Text style={[Font.caption, { color: C.textDim }]}>Moderate</Text>
-              <Text style={[Font.caption, { color: C.textDim }]}>Intense</Text>
+            <View style={s.numGrid}>
+              {Array.from({ length: 10 }, (_, i) => i + 1).map(n => {
+                const on = intensity === n;
+                const col = sel?.color || C.violet;
+                return (
+                  <TouchableOpacity key={n}
+                    style={[s.numBtn, on && { backgroundColor: col, borderColor: col }]}
+                    onPress={() => setIntensity(n)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={[s.numBtnTxt, on && { color: '#fff' }]}>{n}</Text>
+                    {n === 1 && <Text style={s.numHint}>mild</Text>}
+                    {n === 10 && <Text style={s.numHint}>intense</Text>}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             <Text style={[Font.label, { ...s.stepLabel, marginTop: Space['6'] }]}>Energy level</Text>
-            <View style={s.segmentRow}>
-              {Array.from({ length: 10 }, (_, i) => i + 1).map(n => (
-                <TouchableOpacity key={n}
-                  style={[s.segment, { backgroundColor: energy >= n ? C.teal : C.elevated }]}
-                  onPress={() => setEnergy(n)}
-                />
-              ))}
-            </View>
-            <View style={s.segLabels}>
-              <Text style={[Font.caption, { color: C.textDim }]}>Drained</Text>
-              <Text style={[Font.caption, { color: C.textDim }]}>Okay</Text>
-              <Text style={[Font.caption, { color: C.textDim }]}>Energised</Text>
+            <Text style={[Font.caption, { color: C.textDim, marginBottom: Space['3'] }]}>1 = completely drained · 10 = fully energised</Text>
+            <View style={s.numGrid}>
+              {Array.from({ length: 10 }, (_, i) => i + 1).map(n => {
+                const on = energy === n;
+                return (
+                  <TouchableOpacity key={n}
+                    style={[s.numBtn, on && { backgroundColor: C.teal, borderColor: C.teal }]}
+                    onPress={() => setEnergy(n)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={[s.numBtnTxt, on && { color: '#fff' }]}>{n}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
         )}
@@ -345,21 +367,22 @@ export default function CheckInScreen({
               <Text style={[Font.body, { color: C.textDim, fontSize: 28, marginTop: 32 }]}>h</Text>
             </View>
 
-            <View style={[s.segmentRow, { justifyContent: 'center', gap: Space['3'] }]}>
-              {[3, 4, 5, 6, 7, 8, 9, 10].map(n => (
-                <TouchableOpacity key={n}
-                  style={[s.sleepBtn, {
-                    backgroundColor: sleepHours === n
-                      ? (n >= 7 ? C.teal : n >= 5 ? '#FFB74D' : C.danger)
-                      : C.elevated,
-                  }]}
-                  onPress={() => setSleepHours(n)}
-                >
-                  <Text style={[s.sleepBtnTxt, { color: sleepHours === n ? '#fff' : C.textSub }]}>
-                    {n}h
-                  </Text>
-                </TouchableOpacity>
-              ))}
+            <View style={s.sleepGrid}>
+              {[3, 4, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10].map(n => {
+                const on = sleepHours === n;
+                const col = n >= 7 ? C.teal : n >= 5 ? '#FFB74D' : C.danger;
+                return (
+                  <TouchableOpacity key={n}
+                    style={[s.sleepBtn, { backgroundColor: on ? col : C.elevated, borderColor: on ? col : 'transparent' }]}
+                    onPress={() => setSleepHours(n)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={[s.sleepBtnTxt, { color: on ? '#fff' : C.textSub }]}>
+                      {n % 1 === 0 ? `${n}h` : `${n}h`}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             <View style={[s.insightPill, {
@@ -440,32 +463,50 @@ export default function CheckInScreen({
 
         {/* ── STEP 6: Journal ── */}
         {step === 6 && (
-          <View style={s.step}>
-            <Text style={[Font.label, s.stepLabel]}>VADER sentiment + BiLSTM distress analysis</Text>
-            <Text style={[Font.h1, s.stepTitle]}>Anything on{'\n'}your mind?</Text>
-            <Text style={[Font.body, s.stepBody]}>
-              Optional. Processed by our local NLP pipeline — never shared externally. GDPR compliant.
-            </Text>
-            <TextInput
-              style={s.journal}
-              placeholder={`What's been happening today, ${userName.split(' ')[0]}?`}
-              placeholderTextColor={C.textGhost}
-              multiline
-              value={journal}
-              onChangeText={setJournal}
-              maxLength={500}
-            />
-            <Text style={[Font.micro, { textAlign: 'right', marginTop: Space['2'] }]}>
-              {journal.length} / 500
-            </Text>
-            {error ? <Text style={s.errorTxt}>{error}</Text> : null}
-          </View>
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={80}
+          >
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardDismissMode="on-drag"
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={s.step}>
+                <Text style={[Font.label, s.stepLabel]}>VADER sentiment + BiLSTM distress analysis</Text>
+                <Text style={[Font.h1, s.stepTitle]}>Anything on{'\n'}your mind?</Text>
+                <Text style={[Font.body, s.stepBody]}>
+                  Optional. Processed by our local NLP pipeline — never shared externally. GDPR compliant.
+                </Text>
+                <TextInput
+                  style={s.journal}
+                  placeholder={`What's been happening today, ${userName.split(' ')[0]}?`}
+                  placeholderTextColor={C.textGhost}
+                  multiline
+                  blurOnSubmit={false}
+                  value={journal}
+                  onChangeText={setJournal}
+                  maxLength={500}
+                />
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Space['2'] }}>
+                  <TouchableOpacity onPress={Keyboard.dismiss} style={s.kbDismiss}>
+                    <Text style={s.kbDismissTxt}>Done typing ↓</Text>
+                  </TouchableOpacity>
+                  <Text style={Font.micro}>{journal.length} / 500</Text>
+                </View>
+                {error ? <Text style={s.errorTxt}>{error}</Text> : null}
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
         )}
 
       </Animated.View>
 
       {/* CTA */}
       <View style={s.ctaArea}>
+        <Animated.View style={{ transform: [{ scale: ctaScale }] }}>
         <TouchableOpacity
           style={[s.cta, (!canNext || loading) && s.ctaDisabled]}
           onPress={() => step < TOTAL - 1 ? transition(step + 1) : submit()}
@@ -483,6 +524,7 @@ export default function CheckInScreen({
             </Text>
           )}
         </TouchableOpacity>
+        </Animated.View>
         {step === 0 && (
           <Text style={[Font.micro, { textAlign: 'center', marginTop: Space['3'] }]}>
             Stored locally · Never shared · GDPR compliant
@@ -522,37 +564,44 @@ const s = StyleSheet.create({
   screenTimePill: { backgroundColor: C.elevated, borderRadius: Radius.md, paddingHorizontal: Space['4'], paddingVertical: Space['3'] },
   screenTimeTxt: { fontSize: 13, color: C.textDim },
 
-  moodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['2'], marginBottom: Space['4'] },
-  moodTileWrap: { width: 'calc(25% - 6px)' as any, minWidth: 100 },
-  moodTile: { backgroundColor: C.card, borderRadius: Radius.md, padding: Space['4'], alignItems: 'center', position: 'relative', overflow: 'hidden' },
-  moodSelectedIndicator: { position: 'absolute', top: 0, left: 0, right: 0, height: 2, borderRadius: 1 },
-  moodEmoji: { fontSize: 30, marginBottom: Space['2'] },
-  moodName: { fontSize: 12, fontWeight: '600', color: C.text },
+  moodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['3'], marginBottom: Space['4'] },
+  moodTileWrap: { width: 'calc(25% - 9px)' as any, minWidth: 80 },
+  moodTile: { backgroundColor: C.card, borderRadius: Radius.md, paddingVertical: Space['5'], paddingHorizontal: Space['2'], alignItems: 'center', position: 'relative', overflow: 'hidden', minHeight: 88 },
+  moodSelectedIndicator: { position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: 1 },
+  moodEmoji: { fontSize: 36, marginBottom: Space['2'] },
+  moodName: { fontSize: 12, fontWeight: '600', color: C.text, textAlign: 'center' as any },
   valencePill: { flexDirection: 'row', alignItems: 'center', gap: Space['2'], backgroundColor: C.card, borderRadius: Radius.full, paddingHorizontal: Space['4'], paddingVertical: Space['2'], alignSelf: 'flex-start' as any },
   valenceDot: { width: 6, height: 6, borderRadius: 3 },
   valenceTxt: { fontSize: 11, color: C.textDim },
 
   bigNumberRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'center', marginVertical: Space['8'], gap: Space['2'] },
-  segmentRow: { flexDirection: 'row', gap: Space['2'], marginBottom: Space['2'] },
-  segment: { flex: 1, height: 6, borderRadius: 3 },
-  segLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Space['6'] },
 
-  sleepBtn: { width: 46, height: 46, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
-  sleepBtnTxt: { fontSize: 13, fontWeight: '700' },
+  // Number grid for intensity/energy — large tappable buttons
+  numGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['2'], marginBottom: Space['4'] },
+  numBtn: { width: 56, height: 56, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: C.elevated, borderWidth: 1.5, borderColor: 'transparent' },
+  numBtnTxt: { fontSize: 20, fontWeight: '700', color: C.textSub },
+  numHint: { fontSize: 8, color: C.textGhost, marginTop: 1 },
 
-  chipGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['2'] },
-  bodyChip: { flexDirection: 'row', alignItems: 'center', gap: Space['2'], backgroundColor: C.card, borderRadius: Radius.md, paddingHorizontal: Space['4'], paddingVertical: Space['3'], borderWidth: 1, borderColor: 'transparent' },
-  bodyChipTxt: { fontSize: 13, fontWeight: '500', color: C.textSub },
+  // Sleep grid — wider buttons with half-hour options
+  sleepGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['2'], justifyContent: 'center', marginBottom: Space['4'] },
+  sleepBtn: { minWidth: 58, height: 58, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Space['3'], borderWidth: 1.5 },
+  sleepBtnTxt: { fontSize: 15, fontWeight: '700' },
 
-  thoughtWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['2'], marginBottom: Space['4'] },
-  thoughtChip: { paddingHorizontal: Space['5'], paddingVertical: Space['3'], borderRadius: Radius.full, backgroundColor: C.card, borderWidth: 1, borderColor: 'transparent' },
-  thoughtTxt: { fontSize: 14, color: C.textSub, fontWeight: '500' },
+  chipGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['3'] },
+  bodyChip: { flexDirection: 'row', alignItems: 'center', gap: Space['2'], backgroundColor: C.card, borderRadius: Radius.md, paddingHorizontal: Space['4'], paddingVertical: Space['4'], borderWidth: 1, borderColor: 'transparent' },
+  bodyChipTxt: { fontSize: 14, fontWeight: '500', color: C.textSub },
+
+  thoughtWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['3'], marginBottom: Space['4'] },
+  thoughtChip: { paddingHorizontal: Space['5'], paddingVertical: Space['4'], borderRadius: Radius.full, backgroundColor: C.card, borderWidth: 1, borderColor: 'transparent' },
+  thoughtTxt: { fontSize: 15, color: C.textSub, fontWeight: '500' },
 
   insightPill: { backgroundColor: C.violetDim, borderRadius: Radius.md, padding: Space['4'], borderWidth: 1, borderColor: C.violet + '30' },
   insightTxt: { fontSize: 13, color: C.violetSoft, lineHeight: 20 },
 
   journal: { backgroundColor: C.card, borderRadius: Radius.lg, padding: Space['5'], color: C.text, fontSize: 16, minHeight: 140, textAlignVertical: 'top', lineHeight: 24 },
   errorTxt: { fontSize: 13, color: C.danger, textAlign: 'center', marginTop: Space['3'] },
+  kbDismiss: { backgroundColor: 'rgba(124,110,250,0.12)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: 'rgba(124,110,250,0.25)' },
+  kbDismissTxt: { fontSize: 12, color: '#9B94FF', fontWeight: '600' },
 
   ctaArea: { padding: Space['6'], paddingTop: Space['4'] },
   cta: { backgroundColor: C.violet, borderRadius: Radius.lg, padding: Space['5'], alignItems: 'center', ...Shadow.violet },

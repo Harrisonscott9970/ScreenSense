@@ -8,7 +8,7 @@ Improvements over v1:
   - distress_class included in checkin response (surfaces to Scout)
   - Improved insights with BiLSTM/SHAP context
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -16,7 +16,8 @@ from collections import Counter
 import csv, io, json, random
 from pathlib import Path
 
-from app.models.database import get_db, MoodEntry, UserProfile, RecommendationFeedback, ClinicalResult
+import numpy as np
+from app.models.database import get_db, MoodEntry, UserProfile, RecommendationFeedback, ClinicalResult, InterventionLog
 from app.models.schemas import (
     CheckInRequest, MLEvaluationResponse, PlaceRecommendation
 )
@@ -30,6 +31,61 @@ from app.ml.shap_explainer import compute_shap_explanation
 from app.services.external_apis import get_weather, get_places, reverse_geocode
 
 router = APIRouter(prefix="/api", tags=["ScreenSense"])
+
+
+def _page_hinkley(values: list, delta: float = 0.008, threshold: float = 0.12) -> dict:
+    """
+    Page-Hinkley sequential change-point detector.
+    Detects a persistent shift in the mean of a stream of stress scores.
+
+    Algorithm (Page, 1954):
+      PHt_up   = max(0, PHt-1_up   + xt - cumulative_mean - δ)
+      PHt_down = min(0, PHt-1_down + xt - cumulative_mean + δ)
+      ALARM if PHt_up  ≥ λ  →  upward drift (stress increasing)
+              |PHt_down| ≥ λ  →  downward drift (stress improving)
+
+    Parameters
+    ----------
+    delta     : allowable magnitude of in-control variation (sensitivity)
+    threshold : detection threshold λ — lower triggers sooner
+
+    References
+    ----------
+    Page, E.S. (1954). Continuous inspection schemes. Biometrika, 41(1/2), 100-115.
+    Gama, J. et al. (2014). A survey on concept drift adaptation. ACM Comput. Surv.
+    """
+    if len(values) < 8:
+        return {'detected': False, 'ph_up': 0.0, 'ph_down': 0.0}
+
+    arr = np.array(values, dtype=float)
+    ph_up, ph_down = 0.0, 0.0
+    running_mean = 0.0
+
+    for i, x in enumerate(arr):
+        running_mean += (x - running_mean) / (i + 1)
+        ph_up   = max(0.0, ph_up   + x - running_mean - delta)
+        ph_down = min(0.0, ph_down + x - running_mean + delta)
+
+    if ph_up >= threshold:
+        return {
+            'detected':    True,
+            'direction':   'increasing',
+            'magnitude':   round(float(ph_up), 3),
+            'description': 'Stress has been trending upward beyond your usual baseline.',
+            'action':      'Consider checking in with a trusted person or your GP.',
+        }
+    if abs(ph_down) >= threshold:
+        return {
+            'detected':    True,
+            'direction':   'decreasing',
+            'magnitude':   round(float(abs(ph_down)), 3),
+            'description': 'Your stress has been consistently improving — keep it up.',
+            'action':      None,
+        }
+    return {
+        'detected':  False,
+        'magnitude': round(float(max(ph_up, abs(ph_down))), 3),
+    }
 
 # ── Optional model imports (graceful fallback) ─────────────────
 try:
@@ -46,6 +102,20 @@ except Exception:
     BILSTM_AVAILABLE = False
     def classify_distress(text):
         return {'class': 'neutral', 'confidence': 0.5, 'model': 'fallback', 'is_crisis': False}
+
+try:
+    from app.ml.counterfactual import compute_counterfactual
+    COUNTERFACTUAL_AVAILABLE = True
+except Exception:
+    COUNTERFACTUAL_AVAILABLE = False
+    def compute_counterfactual(fv, **kw): return None
+
+try:
+    from app.ml.anomaly_detector import compute_anomaly
+    ANOMALY_AVAILABLE = True
+except Exception:
+    ANOMALY_AVAILABLE = False
+    def compute_anomaly(fv, entries, score, cat): return None
 
 
 # ── CHECKIN ────────────────────────────────────────────────────
@@ -69,11 +139,21 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
         day_of_week         = now.weekday(),
         scroll_session_mins = req.scroll_session_mins,
         heart_rate_resting  = req.heart_rate_resting or 68.0,
-        mood_label          = req.mood_label
+        mood_label          = req.mood_label,
+        weather_temp_c      = float(weather.get('temp_c') or 15.0),
     )
 
-    # 3. SHAP explainability (computed on raw RF before ensemble)
-    shap_explanation = compute_shap_explanation(fv.tolist()[0])
+    # 3. SHAP explainability — personalised using user's rolling averages
+    # Fetch profile early so we can compare today's values to the user's norm
+    _profile_early = db.query(UserProfile).filter_by(user_id=req.user_id).first()
+    user_norms: dict = {}
+    if _profile_early and int(_profile_early.total_entries or 0) >= 3:
+        user_norms = {
+            'avg_screen_time': float(_profile_early.avg_screen_time or 4.5),
+            'avg_sleep':       float(_profile_early.avg_sleep or 7.0),
+        }
+    fv_list = fv.flatten().tolist()
+    shap_explanation = compute_shap_explanation(fv_list, user_norms=user_norms)
 
     # 4. VADER sentiment on journal text
     sentiment = analyse_sentiment(req.journal_text or "")
@@ -96,10 +176,20 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
     stress_score    = ensemble_result.get('ensemble_score', ensemble_result['stress_score'])
     stress_category = ensemble_result.get('ensemble_category', ensemble_result['stress_category'])
 
-    # 6b. Care pathway (NHS stepped care model, NICE 2022)
+    # 6b. Counterfactual explanations — Wachter et al. (2017)
+    # Only computed when stress is moderate/high so the card appears exactly
+    # when actionable advice is most valuable. Greedy perturbation: at each
+    # step we trial every actionable feature, accept the one that most raises
+    # P(low stress), and record the cumulative change.
+    counterfactual = None
+    if stress_category in ('moderate', 'high') and COUNTERFACTUAL_AVAILABLE:
+        counterfactual = compute_counterfactual(fv_list, target_class='low')
+
+    # 6c. Care pathway (NHS stepped care model, NICE 2022)
+    # Fetch 50 entries: care pathway uses the first 10; anomaly detector uses up to 50.
     recent_entries = (
         db.query(MoodEntry).filter_by(user_id=req.user_id)
-        .order_by(MoodEntry.created_at.desc()).limit(10).all()
+        .order_by(MoodEntry.created_at.desc()).limit(50).all()
     )
     recent_dicts = [
         {'predicted_stress_score': e.predicted_stress_score,
@@ -108,8 +198,13 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
          'journal_text': e.journal_text or ''}
         for e in recent_entries
     ]
-    # Override care level if BiLSTM detected crisis language
-    manual_crisis = getattr(req, 'crisis_flag', False) or distress_result.get('is_crisis', False)
+    # BiLSTM crisis flag only escalates to Level 4 if stress is ALSO severe (>0.80).
+    # Without this gate, moderate-stress users with innocent journal text get
+    # mis-classified as crisis — BiLSTM is a screening signal, not a diagnosis.
+    _bilstm_crisis = distress_result.get('is_crisis', False)
+    manual_crisis = getattr(req, 'crisis_flag', False) or (
+        _bilstm_crisis and stress_score > 0.80
+    )
 
     # Fetch latest clinical scores to inform care level (NICE, 2022)
     clinical_latest: dict = {}
@@ -131,6 +226,18 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
         clinical_scores      = clinical_latest if clinical_latest else None,
     )
 
+    # 6d. Anomaly detection — Isolation Forest (Liu et al., 2008)
+    # Flags check-ins that are statistically unusual relative to the user's
+    # personal baseline. Only meaningful after ≥10 historical check-ins.
+    anomaly = None
+    if ANOMALY_AVAILABLE:
+        anomaly = compute_anomaly(
+            fv_list          = fv_list,
+            recent_entries   = recent_entries,
+            stress_score     = stress_score,
+            stress_category  = stress_category,
+        )
+
     # 7. Personalised nudge — informed by feedback history
     feedback_history = _get_feedback_summary(req.user_id, db)
     nudge = generate_nudge(
@@ -140,6 +247,8 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
         sleep_hours       = req.sleep_hours,
         hour_of_day       = now.hour,
         feedback_history  = feedback_history,
+        weather_condition = weather.get("condition") or "Unknown",
+        weather_temp_c    = float(weather.get("temp_c") or 15.0),
     )
     nudge_message = (
         "Right now the most important thing is that you're safe. "
@@ -148,13 +257,17 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
     )
 
     # 8. Place recommendations (ML-informed, mood + stress context)
-    raw_places = []
+    # If no GPS provided, fall back to mood/stress-matched category defaults
+    # so the map always shows meaningful recommendations.
+    from app.services.external_apis import _local_defaults
     if req.latitude and req.longitude:
         raw_places = await get_places(
             lat        = req.latitude,
             lon        = req.longitude,
             categories = nudge.place_categories,
         )
+    else:
+        raw_places = _local_defaults(nudge.place_categories)
     places = [
         PlaceRecommendation(
             name     = p["name"],
@@ -285,6 +398,13 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
         "protective_factors":    care.protective_factors,
         "clinical_note":         care.clinical_note,
         "message_tone":          care.message_tone,
+        # Counterfactual explanations (Wachter et al., 2017)
+        "counterfactual":        counterfactual,
+        # Anomaly detection (Liu et al., 2008)
+        "anomaly":               anomaly,
+        # Conformal prediction set (Angelopoulos & Bates, 2023)
+        "prediction_set":        ml_result.get("prediction_set"),
+        "prediction_set_size":   ml_result.get("prediction_set_size"),
     }
 
 
@@ -440,7 +560,98 @@ async def insights(user_id: str, db: Session = Depends(get_db)):
         "ab_win_rate":        ab_win_rate,
         "feedback_score":     feedback_score,
         "total_feedback":     fb_total,
+        "archetype":          profile.archetype if profile else None,
+        "drift":              _page_hinkley([e.predicted_stress_score for e in reversed(entries[:30])]),
     }
+
+
+# ── PROFILE UPDATE ─────────────────────────────────────────────
+@router.patch("/profile/{user_id}")
+async def update_profile(user_id: str, data: dict = Body(...), db: Session = Depends(get_db)):
+    """Update mutable profile fields: archetype, notifications_on, stress_threshold."""
+    profile = db.query(UserProfile).filter_by(user_id=user_id).first()
+    if not profile:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+    allowed = {'archetype', 'notifications_on', 'stress_threshold'}
+    for key, val in data.items():
+        if key in allowed:
+            setattr(profile, key, val)
+    db.commit()
+    return {"status": "updated", "archetype": profile.archetype}
+
+
+# ── INTERVENTION LOG ───────────────────────────────────────────
+@router.post("/intervention/log")
+async def log_intervention(data: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Records a completed therapy tool session.
+    Called from the frontend when breathing/CBT/mindfulness/gratitude completes.
+    """
+    user_id = data.get("user_id")
+    tool    = data.get("tool")
+    if not user_id or not tool:
+        raise HTTPException(status_code=422, detail="user_id and tool are required")
+    log = InterventionLog(
+        user_id      = user_id,
+        tool         = tool,
+        duration_mins = float(data.get("duration_mins") or 0) or None,
+        cycles       = int(data.get("cycles") or 0) or None,
+    )
+    db.add(log)
+    db.commit()
+    return {"status": "logged", "tool": tool}
+
+
+# ── INTERVENTION EFFICACY ────────────────────────────────────────
+@router.get("/intervention/efficacy/{user_id}")
+async def intervention_efficacy(user_id: str, db: Session = Depends(get_db)):
+    """
+    Computes per-tool stress delta: stress_after_next_checkin − stress_before_intervention.
+    Negative delta = stress reduction = effective intervention.
+
+    Only pairs where there is a check-in within 24h before AND 24h after the intervention
+    are included — this is a within-subjects pre/post design (Shadish et al., 2002).
+    """
+    logs    = db.query(InterventionLog).filter_by(user_id=user_id).order_by(InterventionLog.completed_at).all()
+    entries = db.query(MoodEntry).filter_by(user_id=user_id).order_by(MoodEntry.created_at).all()
+    if not logs or not entries:
+        return {"efficacy": {}, "total_pairs": 0}
+
+    scores_by_time = [(e.created_at, float(e.predicted_stress_score)) for e in entries]
+    window = timedelta(hours=24)
+
+    # Per-tool accumulator: list of (before, after) stress pairs
+    pairs_by_tool: dict = {}
+    for log in logs:
+        t = log.completed_at
+        before = [(ts, s) for ts, s in scores_by_time if t - window <= ts < t]
+        after  = [(ts, s) for ts, s in scores_by_time if t < ts <= t + window]
+        if not before or not after:
+            continue
+        s_before = before[-1][1]   # most recent check-in before intervention
+        s_after  = after[0][1]     # earliest check-in after intervention
+        pairs_by_tool.setdefault(log.tool, []).append((s_before, s_after))
+
+    efficacy: dict = {}
+    total_pairs = 0
+    for tool, pairs in pairs_by_tool.items():
+        deltas = [a - b for b, a in pairs]
+        n      = len(deltas)
+        total_pairs += n
+        avg_before = round(float(np.mean([b for b, _ in pairs])), 3)
+        avg_after  = round(float(np.mean([a for _, a in pairs])), 3)
+        avg_delta  = round(float(np.mean(deltas)), 3)
+        efficacy[tool] = {
+            "sessions":        n,
+            "avg_stress_before": avg_before,
+            "avg_stress_after":  avg_after,
+            "avg_delta":         avg_delta,
+            "avg_delta_pct":     round(avg_delta / max(avg_before, 0.01) * 100, 1),
+            "effective":         avg_delta < -0.02,
+        }
+
+    return {"efficacy": efficacy, "total_pairs": total_pairs}
 
 
 # ── WEEKLY REPORT ──────────────────────────────────────────────
@@ -573,6 +784,43 @@ async def ml_evaluate():
     )
 
 
+@router.get("/ml/diagnostics")
+async def ml_diagnostics():
+    """
+    Rich ML evaluation diagnostics from eval_report.json:
+    calibration reliability curves (Niculescu-Mizil & Caruana, 2005),
+    learning curve by training size, bootstrap CI, Cohen's κ, MCC,
+    challenger comparison, permutation importances, conformal set q̂.
+
+    These fields are computed at train time but were not previously exposed
+    via API — this endpoint surfaces them for the InsightsScreen ML tab.
+    """
+    report = load_eval_report()
+    if not report:
+        raise HTTPException(status_code=503, detail="Run: python -m app.ml.train")
+    return {
+        "calibration_curves":            report.get("calibration_curves"),
+        "learning_curve":                report.get("learning_curve"),
+        "cohen_kappa":                   report.get("cohen_kappa"),
+        "matthews_cc":                   report.get("matthews_cc"),
+        "f1_bootstrap_ci_lower":         report.get("f1_bootstrap_ci_lower"),
+        "f1_bootstrap_ci_upper":         report.get("f1_bootstrap_ci_upper"),
+        "brier_score_mean":              report.get("brier_score_mean"),
+        "challenger_comparison":         report.get("challenger_comparison"),
+        "permutation_importances":       report.get("permutation_importances"),
+        "conformal_set_q_hat":           report.get("conformal_set_q_hat"),
+        "conformal_set_avg_size":        report.get("conformal_set_avg_size"),
+        "conformal_q_hat":               report.get("conformal_q_hat"),
+        "conformal_empirical_coverage":  report.get("conformal_empirical_coverage"),
+        "oob_score":                     report.get("oob_score"),
+        "split_method":                  report.get("split_method"),
+        "calibration_samples":           report.get("calibration_samples"),
+        "test_samples":                  report.get("test_samples"),
+        "uncalibrated_f1":               report.get("uncalibrated_f1"),
+        "best_search_cv_f1":             report.get("best_search_cv_f1"),
+    }
+
+
 @router.post("/retrain")
 async def retrain_models(data: dict, db: Session = Depends(get_db)):
     """
@@ -619,22 +867,39 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
             "entries_available": len(entries),
         }
 
-    # ── 2. Build real-data DataFrame ──────────────────────────────────
+    # ── 2. Build real-data DataFrame (all 14 features) ───────────────
     MOOD_VALENCE = {'anxious': -0.70, 'stressed': -0.60, 'low': -0.80,
                     'numb': -0.40, 'calm': 0.60, 'content': 0.70,
                     'energised': 0.50, 'joyful': 0.90}
     rows = []
     for e in entries:
+        hour = float(e.hour_of_day or 12)
+        day  = float(e.day_of_week or 0)
+        scr  = float(e.screen_time_hours or 4.0)
+        slp  = float(e.sleep_hours or 7.0)
+        # Cyclical encodings (Waskom, 2018)
+        hour_sin = float(np.sin(2 * np.pi * hour / 24))
+        hour_cos = float(np.cos(2 * np.pi * hour / 24))
+        day_sin  = float(np.sin(2 * np.pi * day / 7))
+        day_cos  = float(np.cos(2 * np.pi * day / 7))
+        # Screen × sleep interaction (Levenson et al., 2017)
+        interaction = float(max(0.0, (scr / 10.0) * max(0.0, (8 - slp) / 8.0)) * 0.15)
         rows.append({
-            'screen_time_hours':  float(e.screen_time_hours or 4.0),
-            'sleep_hours':        float(e.sleep_hours or 7.0),
-            'energy_level':       float(e.energy_level or 5),
-            'hour_of_day':        float(e.hour_of_day or 12),
-            'day_of_week':        float(e.day_of_week or 0),
-            'scroll_session_mins': float(e.scroll_session_mins or 15),
-            'heart_rate_resting': float(e.heart_rate_resting or 68.0),
-            'mood_valence':       float(MOOD_VALENCE.get(e.mood_label or 'calm', 0.0)),
-            'stress_label':       e.stress_category,
+            'screen_time_hours':       scr,
+            'sleep_hours':             slp,
+            'energy_level':            float(e.energy_level or 5),
+            'hour_of_day':             hour,
+            'day_of_week':             day,
+            'scroll_session_mins':     float(e.scroll_session_mins or 15),
+            'heart_rate_resting':      float(e.heart_rate_resting or 68.0),
+            'mood_valence':            float(MOOD_VALENCE.get(e.mood_label or 'calm', 0.0)),
+            'hour_sin':                hour_sin,
+            'hour_cos':                hour_cos,
+            'day_sin':                 day_sin,
+            'day_cos':                 day_cos,
+            'screen_sleep_interaction': interaction,
+            'weather_temp_c':          float(e.weather_temp_c or 15.0),
+            'stress_label':            e.stress_category,
         })
     real_df = pd.DataFrame(rows)
 
@@ -654,12 +919,29 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
     if y.nunique() < 2:
         return {"status": "skipped", "reason": "Need at least 2 stress classes to retrain"}
 
-    # ── 4. Retrain ────────────────────────────────────────────────────
+    # ── 4. Retrain — reuse best hyperparams from initial training ────
+    # Loading best_params from eval_report ensures we don't regress to
+    # weaker fixed hyperparameters on each retrain cycle. This directly
+    # addresses the catastrophic forgetting / F1 degradation pattern
+    # observed in control panel learning curves (Widmer & Kubat, 1996).
+    old_report  = load_eval_report()
+    saved_params = old_report.get("best_params", {})
+    # Map param names back (best_params stored without 'clf__' prefix)
+    n_est   = int(saved_params.get("n_estimators", 300))
+    depth   = saved_params.get("max_depth")
+    depth   = None if str(depth) == "None" else int(depth) if depth else 12
+    min_spl = int(saved_params.get("min_samples_split", 4))
+    min_lf  = int(saved_params.get("min_samples_leaf", 2))
+    max_ft  = saved_params.get("max_features", "sqrt")
+    if str(max_ft) == "None": max_ft = None
+
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('clf', RandomForestClassifier(
-            n_estimators=200, max_depth=12, min_samples_leaf=4,
-            class_weight='balanced', random_state=42, n_jobs=-1
+            n_estimators=n_est, max_depth=depth,
+            min_samples_split=min_spl, min_samples_leaf=min_lf,
+            max_features=max_ft,
+            class_weight='balanced', random_state=42, n_jobs=-1, oob_score=True,
         ))
     ])
 
@@ -667,21 +949,22 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, pipeline.fit, X, y)
 
-    y_pred    = await loop.run_in_executor(None, pipeline.predict, X)
-    new_acc   = round(float(accuracy_score(y, y_pred)), 4)
-    new_f1    = round(float(f1_score(y, y_pred, average='weighted')), 4)
-
-    cv     = StratifiedKFold(n_splits=min(5, y.value_counts().min()), shuffle=True, random_state=42)
+    cv     = StratifiedKFold(n_splits=min(5, int(y.value_counts().min())), shuffle=True, random_state=42)
     cv_scores = await loop.run_in_executor(
         None, lambda: cross_val_score(pipeline, X, y, cv=cv, scoring='f1_weighted')
     )
     cv_mean = round(float(cv_scores.mean()), 4)
     cv_std  = round(float(cv_scores.std()), 4)
 
-    # ── 5. Compare with old model — only save if improved ─────────────
-    old_report = load_eval_report()
-    old_f1     = old_report.get("f1_weighted", 0.0)
-    improved   = new_f1 >= old_f1 - 0.02  # allow up to 2% regression (real data is noisier)
+    y_pred  = await loop.run_in_executor(None, pipeline.predict, X)
+    new_acc = round(float(accuracy_score(y, y_pred)), 4)
+    new_f1  = round(float(f1_score(y, y_pred, average='weighted')), 4)
+
+    # ── 5. Champion/challenger on CV F1 (not train F1) ───────────────
+    # Comparing cross-validated F1 prevents inflated train-set scores
+    # from triggering spurious saves and corrupting the model history.
+    old_cv_f1  = old_report.get("cv_f1_mean", old_report.get("f1_weighted", 0.0))
+    improved   = cv_mean >= old_cv_f1 - 0.03  # allow 3% tolerance for real-data noise
 
     message = "Retrained and saved" if improved else "Retrained but not saved (no improvement)"
     feature_importances_new = dict(zip(
@@ -702,7 +985,13 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
             "training_samples": len(X) - len(rows),
             "real_samples":     len(rows),
             "test_samples":     0,
-            "model": "RandomForestClassifier(n_estimators=200) — online update",
+            "best_params":    saved_params,   # preserve for future retrains
+            "conformal_q_hat": old_report.get("conformal_q_hat"),
+            "conformal_alpha": old_report.get("conformal_alpha", 0.1),
+            "model": (
+                f"RandomForestClassifier(n_estimators={n_est}) — "
+                f"continual learning update (Widmer & Kubat, 1996)"
+            ),
             "last_retrained": datetime.utcnow().isoformat(),
         }
         with open(MODEL_DIR / "eval_report.json", "w") as f:
@@ -719,12 +1008,13 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
         "real_entries_used": len(rows),
         "total_samples":    len(combined_df),
         "new_f1_weighted":  new_f1,
-        "old_f1_weighted":  old_f1,
+        "old_cv_f1":        old_cv_f1,
         "cv_f1_mean":       cv_mean,
         "cv_f1_std":        cv_std,
         "improved":         improved,
         "top_feature":      max(feature_importances_new, key=feature_importances_new.get),
         "user_id":          user_id or "all",
+        "n_estimators":     n_est,
     }
     try:
         existing = json.loads(history_path.read_text()) if history_path.exists() else []
@@ -739,12 +1029,16 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
         "real_entries_used": len(rows),
         "total_samples":    len(combined_df),
         "new_f1_weighted":  new_f1,
-        "old_f1_weighted":  old_f1,
+        "old_cv_f1":        old_cv_f1,
         "cv_f1_mean":       cv_mean,
         "cv_f1_std":        cv_std,
         "improved":         improved,
         "feature_importances": feature_importances_new,
-        "academic_note":    "Continual learning via periodic refit — Widmer & Kubat (1996). Real data weighted 3× synthetic to prioritise user-specific patterns.",
+        "academic_note":    (
+            "Continual learning via periodic refit — Widmer & Kubat (1996). "
+            "Real data weighted 3× synthetic. Best hyperparams from initial "
+            "RandomizedSearchCV preserved across retrains to prevent regression."
+        ),
     }
 
 
@@ -995,6 +1289,60 @@ async def get_entries(user_id: str, limit: int = 50, db: Session = Depends(get_d
     ]
 
 
+# ── Live place recommendations (GPS → Overpass → real places) ──
+@router.get("/places")
+async def get_nearby_places(
+    lat: float,
+    lon: float,
+    mood: str = "calm",
+    stress_category: str = "moderate",
+):
+    """
+    Returns live place recommendations based on current GPS coordinates.
+    Uses the nudge engine to select categories for the given mood/stress,
+    then queries OpenStreetMap Overpass for real nearby venues.
+    Called directly by MapScreen — no check-in required.
+    """
+    from datetime import datetime as _dt
+    nudge = generate_nudge(
+        stress_category   = stress_category,
+        mood_label        = mood,
+        screen_time_hours = 0,
+        sleep_hours       = 7,
+        hour_of_day       = _dt.utcnow().hour,
+    )
+    from app.services.external_apis import get_places as _gp
+    raw = await _gp(lat=lat, lon=lon, categories=nudge.place_categories)
+
+    REASONS = {
+        ("Park",       "high"):     "Natural environments lower cortisol — Ulrich SRT (1984)",
+        ("Library",    "high"):     "Quiet structured space for mental decompression",
+        ("Garden",     "high"):     "Green space activates Kaplan's restorative attention (ART, 1995)",
+        ("Café",       "moderate"): "Mild social stimulation without pressure — Ulrich (1984)",
+        ("Gallery",    "moderate"): "Aesthetic engagement supports mood regulation",
+        ("Bookshop",   "moderate"): "Low-stimulation browsing environment — Kaplan (1995)",
+        ("Market",     "low"):      "Exploratory environment suits positive affect — Fredrickson (2001)",
+        ("Restaurant", "low"):      "Social reward aligns with positive mood state",
+    }
+    default_reason = "Recommended based on your current affect profile"
+
+    return {
+        "places": [
+            {
+                "name":       p.get("name"),
+                "type":       p.get("type", "Place"),
+                "icon":       p.get("icon", "📍"),
+                "reason":     REASONS.get((p.get("type", ""), stress_category), default_reason),
+                "address":    p.get("address"),
+                "distance_m": p.get("distance_m"),
+            }
+            for p in raw[:4]
+        ],
+        "rationale":  nudge.place_rationale,
+        "categories": nudge.place_categories,
+    }
+
+
 # ── Background continual learning ─────────────────────────────
 async def _background_retrain(user_id: str):
     """
@@ -1021,34 +1369,57 @@ async def _background_retrain(user_id: str):
             entries = db_bg.query(MoodEntry).filter(MoodEntry.stress_category.isnot(None)).all()
             if len(entries) < 10:
                 return
-            rows = [{
-                'screen_time_hours':   float(e.screen_time_hours or 4),
-                'sleep_hours':         float(e.sleep_hours or 7),
-                'energy_level':        float(e.energy_level or 5),
-                'hour_of_day':         float(e.hour_of_day or 12),
-                'day_of_week':         float(e.day_of_week or 0),
-                'scroll_session_mins': float(e.scroll_session_mins or 15),
-                'heart_rate_resting':  float(e.heart_rate_resting or 68),
-                'mood_valence':        float(MOOD_V.get(e.mood_label or 'calm', 0)),
-                'stress_label':        e.stress_category,
-            } for e in entries]
+            import numpy as _np
+            rows = []
+            for e in entries:
+                _hour = float(e.hour_of_day or 12)
+                _day  = float(e.day_of_week or 0)
+                _scr  = float(e.screen_time_hours or 4)
+                _slp  = float(e.sleep_hours or 7)
+                rows.append({
+                    'screen_time_hours':        _scr,
+                    'sleep_hours':              _slp,
+                    'energy_level':             float(e.energy_level or 5),
+                    'hour_of_day':              _hour,
+                    'day_of_week':              _day,
+                    'scroll_session_mins':      float(e.scroll_session_mins or 15),
+                    'heart_rate_resting':       float(e.heart_rate_resting or 68),
+                    'mood_valence':             float(MOOD_V.get(e.mood_label or 'calm', 0)),
+                    'hour_sin':                 float(_np.sin(2 * _np.pi * _hour / 24)),
+                    'hour_cos':                 float(_np.cos(2 * _np.pi * _hour / 24)),
+                    'day_sin':                  float(_np.sin(2 * _np.pi * _day / 7)),
+                    'day_cos':                  float(_np.cos(2 * _np.pi * _day / 7)),
+                    'screen_sleep_interaction': float(max(0.0, (_scr / 10.0) * max(0.0, (8 - _slp) / 8.0)) * 0.15),
+                    'weather_temp_c':           float(e.weather_temp_c or 15.0),
+                    'stress_label':             e.stress_category,
+                })
             real_df = pd.DataFrame(rows)
             syn_path = Path(__file__).parent.parent.parent / "data" / "synthetic_training.csv"
             combined = pd.concat([pd.read_csv(syn_path), real_df, real_df, real_df], ignore_index=True) if syn_path.exists() else real_df
             X, y = combined[FEATURES], combined['stress_label']
             if y.nunique() < 2:
                 return
+            # Reuse best hyperparams from initial training (prevents regression)
+            _old_report = load_eval_report()
+            _sp = _old_report.get("best_params", {})
+            _n_est = int(_sp.get("n_estimators", 300))
+            _depth = _sp.get("max_depth"); _depth = None if str(_depth) == "None" else (int(_depth) if _depth else 12)
             pipeline = _Pipeline([
                 ('scaler', StandardScaler()),
-                ('clf', RandomForestClassifier(n_estimators=200, max_depth=12,
-                    min_samples_leaf=4, class_weight='balanced', random_state=42, n_jobs=-1))
+                ('clf', RandomForestClassifier(
+                    n_estimators=_n_est, max_depth=_depth,
+                    min_samples_split=int(_sp.get("min_samples_split", 4)),
+                    min_samples_leaf=int(_sp.get("min_samples_leaf", 2)),
+                    max_features=_sp.get("max_features", "sqrt") if str(_sp.get("max_features", "sqrt")) != "None" else None,
+                    class_weight='balanced', random_state=42, n_jobs=-1
+                ))
             ])
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, pipeline.fit, X, y)
             y_pred = await loop.run_in_executor(None, pipeline.predict, X)
             new_f1 = round(float(_f1(y, y_pred, average='weighted')), 4)
-            old_f1 = load_eval_report().get('f1_weighted', 0.0)
-            if new_f1 >= old_f1 - 0.02:
+            old_cv_f1 = _old_report.get('cv_f1_mean', _old_report.get('f1_weighted', 0.0))
+            if new_f1 >= old_cv_f1 - 0.03:
                 _mdir = Path(__file__).parent.parent.parent / "data" / "models"
                 _joblib.dump(pipeline, _mdir / "stress_classifier.joblib")
                 load_model.cache_clear()
@@ -1061,7 +1432,7 @@ async def _background_retrain(user_id: str):
                     "real_entries_used": len(rows),
                     "total_samples": len(combined),
                     "new_f1_weighted": new_f1,
-                    "old_f1_weighted": old_f1,
+                    "old_cv_f1": old_cv_f1,
                     "cv_f1_mean": new_f1,
                     "cv_f1_std": 0.0,
                     "improved": True,

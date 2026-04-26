@@ -35,7 +35,9 @@
       "versionCode": 1,
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "RECEIVE_BOOT_COMPLETED",
+        "SCHEDULE_EXACT_ALARM"
       ]
     },
     "web": {
@@ -44,13 +46,18 @@
       "output": "single"
     },
     "plugins": [
-      "expo-location"
+      "expo-location",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#6C63FF",
+          "sounds": []
+        }
+      ]
     ],
     "extra": {
-      "apiUrl": "https://screensense-api.onrender.com/api",
-      "eas": {
-        "projectId": "your-eas-project-id"
-      }
+      "apiUrl": "https://screensense-api.onrender.com/api"
     }
   }
 }

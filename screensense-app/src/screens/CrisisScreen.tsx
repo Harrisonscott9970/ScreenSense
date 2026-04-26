@@ -48,8 +48,7 @@ export default function CrisisScreen({ onBack, userName = 'Harrison', riskFactor
   }, []);
 
   const openURL = (url: string) => {
-    if (typeof window !== 'undefined') window.open(url, '_blank');
-    else Linking.openURL(url).catch(() => {});
+    Linking.openURL(url).catch(() => {});
   };
 
   return (

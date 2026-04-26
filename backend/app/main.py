@@ -87,6 +87,47 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(auth_router)
 
+@app.get("/api/places")
+async def places_nearby(lat: float, lon: float, mood: str = "calm", stress_category: str = "moderate"):
+    """Live nearby places — MapScreen calls this directly using GPS, no check-in required."""
+    from datetime import datetime as _dt
+    from app.ml.nudge_engine import generate_nudge
+    from app.services.external_apis import get_places
+    nudge = generate_nudge(
+        stress_category=stress_category, mood_label=mood,
+        screen_time_hours=0, sleep_hours=7, hour_of_day=_dt.utcnow().hour,
+    )
+    raw = await get_places(lat=lat, lon=lon, categories=nudge.place_categories)
+    REASONS = {
+        ("Park",       "high"):     "Natural environments lower cortisol — Ulrich SRT (1984)",
+        ("Library",    "high"):     "Quiet structured space for mental decompression",
+        ("Garden",     "high"):     "Green space activates Kaplan ART (1995)",
+        ("Cafe",       "high"):     "Low-stimulation café for decompression",
+        ("Café",       "moderate"): "Mild social stimulation without pressure",
+        ("Gallery",    "moderate"): "Aesthetic engagement supports mood regulation",
+        ("Bookshop",   "moderate"): "Low-stimulation browsing — Kaplan (1995)",
+        ("Museum",     "moderate"): "Cultural engagement with attentional restoration",
+        ("Market",     "low"):      "Exploratory environment — Fredrickson (2001)",
+        ("Restaurant", "low"):      "Social reward aligns with positive mood state",
+    }
+    return {
+        "places": [
+            {
+                "name":       p.get("name"),
+                "type":       p.get("type", "Place"),
+                "icon":       p.get("icon", "\U0001f4cd"),
+                "reason":     REASONS.get((p.get("type", ""), stress_category),
+                                         "Recommended for your current affect profile"),
+                "address":    p.get("address"),
+                "distance_m": p.get("distance_m"),
+            }
+            for p in raw[:4]
+        ],
+        "rationale":  nudge.place_rationale,
+        "categories": nudge.place_categories,
+    }
+
+
 @app.get("/")
 async def root():
     return {"app": settings.app_name, "version": settings.app_version, "status": "running"}

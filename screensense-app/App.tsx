@@ -14,7 +14,8 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { C, Space, Radius, Shadow } from './src/utils/theme';
-import { initApiUrl } from './src/services/api';
+import { initApiUrl, BASE_URL, api } from './src/services/api';
+import { setupNotifications, scheduleWeeklyReport, addNotificationResponseListener } from './src/utils/notifications';
 
 import OnboardingScreen    from './src/screens/OnboardingScreen';
 import AuthScreen          from './src/screens/AuthScreen';
@@ -88,8 +89,7 @@ const WEB_NAV = [
   { label: 'Explore', items: [
     { tab: 'map'      as Tab, icon: '🗺', label: 'Map',       sub: 'Places nearby' },
     { tab: 'log'      as Tab, icon: '📓', label: 'Log',       sub: 'Your history' },
-    { tab: 'insights' as Tab, icon: '📊', label: 'Insights',  sub: 'Patterns & ML' },
-    { tab: 'weekly'   as Tab, icon: '📅', label: 'Weekly',    sub: 'Weekly report' },
+    { tab: 'insights' as Tab, icon: '📊', label: 'Insights',  sub: 'Patterns & trends' },
   ]},
   { label: 'Account', items: [
     { tab: 'profile' as Tab, icon: '👤', label: 'Profile',   sub: 'Settings & account' },
@@ -121,6 +121,7 @@ function AppInner() {
   const [lastStress, setLastStress] = useState<number | undefined>();
   const [lastResult, setLastResult] = useState<any>(null);
   const [screenTimeHours, setScreenTimeHours] = useState(0);
+  const tabScales = useRef(BOTTOM_TABS.map(() => new Animated.Value(1))).current;
 
   // Real screen-time tracking
   const sessionStart  = useRef<number>(Date.now());
@@ -139,7 +140,7 @@ function AppInner() {
     const interval = setInterval(() => {
       const mins = (Date.now() - sessionStart.current) / 60000;
       setScreenTimeHours(parseFloat(((totalMinutes.current + mins) / 60).toFixed(1)));
-    }, 300000);
+    }, 60000);
     return () => { sub.remove(); clearInterval(interval); };
   }, []);
 
@@ -154,6 +155,11 @@ function AppInner() {
     // Load saved server IP before any API calls
     initApiUrl().catch(() => {});
 
+    // Navigate to correct screen when user taps a notification
+    const removeSub = addNotificationResponseListener((screen) => {
+      if (screen === 'weekly') setTab('weekly');
+    });
+
     // Restore session from AsyncStorage (works on mobile + web)
     (async () => {
       const id        = await getItem('ss_user_id');
@@ -163,15 +169,33 @@ function AppInner() {
       const onboarded = await getItem('ss_onboarded');
 
       if (id && name && token) {
-        // email is optional — may be absent from sessions before the AsyncStorage fix
         setUser({ id, name, email: email ?? '', token });
         setPhase('app');
+        // Restore last check-in result so Map shows correct data on relaunch
+        try {
+          const res = await fetch(`${BASE_URL}/entries/${id}?limit=1`);
+          if (res.ok) {
+            const entries = await res.json();
+            if (entries?.length > 0) {
+              const e = entries[0];
+              setLastMood(e.mood_label);
+              setLastStress(e.stress_score ?? e.predicted_stress_score);
+              setLastResult({
+                place_recommendations: e.place_recommendations || [],
+                care_level: e.care_level,
+                risk_factors_detected: [],
+              });
+            }
+          }
+        } catch {}
       } else if (onboarded) {
         setPhase('auth');
       } else {
         setPhase('onboarding');
       }
     })();
+
+    return () => { removeSub?.(); };
   }, []);
 
   const orb1 = breathe.interpolate({ inputRange: [0,1], outputRange: [1, 1.15] });
@@ -196,6 +220,14 @@ function AppInner() {
     await storeItem('ss_token', token);
     setUser({ id: userId, name: userName, email, token });
     setPhase('app');
+    // Schedule weekly Sunday 8pm wellbeing report notification
+    setupNotifications().then(granted => {
+      if (granted) scheduleWeeklyReport().catch(() => {});
+    }).catch(() => {});
+    // Sync onboarding archetype to backend profile
+    AsyncStorage.getItem('ss_archetype').then(archetype => {
+      if (archetype) api.updateProfile(userId, { archetype }).catch(() => {});
+    }).catch(() => {});
   }, []);
 
   const handleLogout = useCallback(async () => {
@@ -209,6 +241,14 @@ function AppInner() {
     setLastStress(stress);
     setLastResult(result);
   }, []);
+
+  const handleTabPress = useCallback((idx: number, targetTab: Tab) => {
+    Animated.sequence([
+      Animated.spring(tabScales[idx], { toValue: 1.25, useNativeDriver: true, tension: 350, friction: 10 }),
+      Animated.spring(tabScales[idx], { toValue: 1,    useNativeDriver: true, tension: 350, friction: 10 }),
+    ]).start();
+    setTab(targetTab);
+  }, [tabScales]);
 
   if (phase === 'loading') return <View style={s.root}><Bg /></View>;
 
@@ -300,13 +340,13 @@ function AppInner() {
         <SafeAreaView style={ms.safe}>
           <View style={ms.content}>{renderScreen()}</View>
           <View style={ms.tabBar}>
-            {BOTTOM_TABS.map(item => {
+            {BOTTOM_TABS.map((item, idx) => {
               const active = tab === item.tab;
               return (
-                <TouchableOpacity key={item.tab} style={ms.tabItem} onPress={() => setTab(item.tab)} activeOpacity={0.7}>
-                  <View style={[ms.tabIconWrap, active && ms.tabIconWrapActive]}>
+                <TouchableOpacity key={item.tab} style={ms.tabItem} onPress={() => handleTabPress(idx, item.tab)} activeOpacity={0.7}>
+                  <Animated.View style={[ms.tabIconWrap, active && ms.tabIconWrapActive, { transform: [{ scale: tabScales[idx] }] }]}>
                     <Text style={[ms.tabIcon, { opacity: active ? 1 : 0.4 }]}>{item.icon}</Text>
-                  </View>
+                  </Animated.View>
                   <Text style={[ms.tabLabel, active && ms.tabLabelActive]}>{item.label}</Text>
                 </TouchableOpacity>
               );

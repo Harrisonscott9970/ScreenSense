@@ -8,7 +8,7 @@ import { BASE_URL } from '../services/api';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
-      MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
+      MUT = 'rgba(238,240,255,0.55)', SUB = 'rgba(238,240,255,0.32)',
       CARD = 'rgba(255,255,255,0.05)', BOR = 'rgba(255,255,255,0.09)';
 
 // ── PHQ-9 Questions (Kroenke et al., 2001) ─────────────────────
@@ -95,6 +95,18 @@ const WHO5 = {
 };
 
 const ASSESSMENTS = [PHQ9, GAD7, WHO5];
+
+// Delta between most recent and second-most-recent result for each assessment.
+// For PHQ-9 and GAD-7, lower is better. For WHO-5, higher is better.
+function computeDelta(history: any[], assessmentId: string): { delta: number; better: boolean } | null {
+  const entries = history.filter(h => h.id === assessmentId);
+  if (entries.length < 2) return null;
+  const newer = entries[0].score;
+  const older  = entries[1].score;
+  const delta = newer - older;
+  const better = assessmentId === 'who5' ? delta > 0 : delta < 0;
+  return { delta, better };
+}
 
 interface Props { userId?: string; }
 
@@ -196,17 +208,25 @@ export default function ClinicalScreen({ userId }: Props) {
         <Text style={s.secLabel}>Available assessments</Text>
         {ASSESSMENTS.map(a => {
           const lastResult = history.find(h => h.id === a.id);
+          const deltaInfo  = computeDelta(history, a.id);
           return (
             <TouchableOpacity key={a.id} style={[s.assessCard, { borderLeftColor: a.color }]}
               onPress={() => { setSelected(a.id); setAnswers([]); setCurrentQ(0); setResult(null); }}
               activeOpacity={0.85}>
               <View style={s.assessHeader}>
-                <View>
+                <View style={{ flex: 1 }}>
                   <View style={s.assessTitleRow}>
                     <View style={[s.assessBadge, { backgroundColor: a.color + '20', borderColor: a.color + '40' }]}>
                       <Text style={[s.assessBadgeTxt, { color: a.color }]}>{a.title}</Text>
                     </View>
                     <Text style={s.assessQCount}>{a.questions.length} questions · ~2 min</Text>
+                    {deltaInfo && (
+                      <View style={[s.deltaBadge, { backgroundColor: deltaInfo.better ? G + '20' : R + '20' }]}>
+                        <Text style={[s.deltaBadgeTxt, { color: deltaInfo.better ? G : R }]}>
+                          {deltaInfo.better ? '↓' : '↑'}{Math.abs(deltaInfo.delta)} vs last
+                        </Text>
+                      </View>
+                    )}
                   </View>
                   <Text style={s.assessFullTitle}>{a.fullTitle}</Text>
                   <Text style={s.assessDesc}>{a.description.substring(0, 70)}…</Text>
@@ -226,18 +246,31 @@ export default function ClinicalScreen({ userId }: Props) {
         {history.length > 0 && (
           <>
             <Text style={[s.secLabel, { marginTop: 8 }]}>Recent results</Text>
-            {history.slice(0, 5).map((h, i) => (
-              <View key={i} style={s.histCard}>
-                <View style={[s.histBadge, { backgroundColor: h.interpretation.color + '20', borderColor: h.interpretation.color + '35' }]}>
-                  <Text style={[s.histBadgeTxt, { color: h.interpretation.color }]}>{h.title}</Text>
+            {history.slice(0, 5).map((h, i) => {
+              // delta vs the next older result of the same type
+              const sameType = history.filter(x => x.id === h.id);
+              const myIdx    = sameType.findIndex(x => x === h);
+              const prevH    = sameType[myIdx + 1];
+              const hDelta   = prevH ? h.score - prevH.score : null;
+              const hBetter  = hDelta !== null ? (h.id === 'who5' ? hDelta > 0 : hDelta < 0) : false;
+              return (
+                <View key={i} style={s.histCard}>
+                  <View style={[s.histBadge, { backgroundColor: h.interpretation.color + '20', borderColor: h.interpretation.color + '35' }]}>
+                    <Text style={[s.histBadgeTxt, { color: h.interpretation.color }]}>{h.title}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.histLabel}>{h.interpretation.label}</Text>
+                    <Text style={s.histDate}>{new Date(h.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
+                  </View>
+                  {hDelta !== null && (
+                    <Text style={[s.histDelta, { color: hBetter ? G : R }]}>
+                      {hBetter ? '↓' : '↑'}{Math.abs(hDelta)}
+                    </Text>
+                  )}
+                  <Text style={[s.histScore, { color: h.interpretation.color }]}>{h.score}/{h.max}</Text>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.histLabel}>{h.interpretation.label}</Text>
-                  <Text style={s.histDate}>{new Date(h.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
-                </View>
-                <Text style={[s.histScore, { color: h.interpretation.color }]}>{h.score}/{h.max}</Text>
-              </View>
-            ))}
+              );
+            })}
           </>
         )}
 
@@ -253,6 +286,13 @@ export default function ClinicalScreen({ userId }: Props) {
   // ── Result ─────────────────────────────────────────────────
   if (result) {
     const interp = result.interpretation;
+    // Delta vs previous attempt of the same type
+    const prevEntries = history.filter(h => h.id === result.id);
+    const prevResult  = prevEntries.length >= 2 ? prevEntries[1] : null;
+    const scoreDelta  = prevResult ? result.score - prevResult.score : null;
+    const deltaIsBetter = scoreDelta !== null
+      ? (result.id === 'who5' ? scoreDelta > 0 : scoreDelta < 0)
+      : false;
     return (
       <ScrollView style={s.root} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
         <View style={s.resultHero}>
@@ -269,6 +309,22 @@ export default function ClinicalScreen({ userId }: Props) {
           <Text style={s.resultCardTitle}>What this means</Text>
           <Text style={s.resultCardTxt}>{interp.desc}</Text>
         </View>
+
+        {scoreDelta !== null && (
+          <View style={[s.resultCard, { borderLeftColor: deltaIsBetter ? G : R, backgroundColor: (deltaIsBetter ? G : R) + '0A' }]}>
+            <Text style={s.resultCardTitle}>Change since last assessment</Text>
+            <Text style={[s.resultCardTxt, { color: deltaIsBetter ? G : R, fontWeight: '700' }]}>
+              {deltaIsBetter ? '↓' : '↑'} {Math.abs(scoreDelta)} point{Math.abs(scoreDelta) !== 1 ? 's' : ''} {deltaIsBetter ? 'lower' : 'higher'} than last time
+            </Text>
+            <Text style={[s.resultCardTxt, { fontSize: 12, color: MUT, marginTop: 4 }]}>
+              {prevResult?.score} → {result.score}
+              {' · '}
+              {deltaIsBetter
+                ? (result.id === 'who5' ? 'Your wellbeing has improved.' : 'Your symptoms have reduced — positive progress.')
+                : (result.id === 'who5' ? 'Your wellbeing has dipped — worth monitoring.' : 'Scores have increased — consider additional support.')}
+            </Text>
+          </View>
+        )}
 
         <View style={s.resultCard}>
           <Text style={s.resultCardTitle}>Care level</Text>
@@ -361,6 +417,8 @@ const s = StyleSheet.create({
   lastScore: { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7, alignItems: 'center', minWidth: 48 },
   lastScoreVal: { fontSize: 18, fontWeight: '800', lineHeight: 20 },
   lastScoreLbl: { fontSize: 8, color: SUB, textTransform: 'uppercase' },
+  deltaBadge: { borderRadius: 99, paddingHorizontal: 8, paddingVertical: 3 },
+  deltaBadgeTxt: { fontSize: 10, fontWeight: '700' },
 
   histCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: CARD, borderRadius: 12, padding: 12, marginBottom: 6, borderWidth: 0.5, borderColor: BOR },
   histBadge: { borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5, borderWidth: 1 },
@@ -368,6 +426,7 @@ const s = StyleSheet.create({
   histLabel: { fontSize: 13, fontWeight: '600', color: TXT, marginBottom: 2 },
   histDate: { fontSize: 11, color: MUT },
   histScore: { fontSize: 16, fontWeight: '800' },
+  histDelta: { fontSize: 12, fontWeight: '700', marginRight: 6 },
 
   disclaimerCard: { backgroundColor: 'rgba(255,183,77,0.08)', borderRadius: 14, padding: 16, marginTop: 12, borderWidth: 1, borderColor: 'rgba(255,183,77,0.2)' },
   disclaimerTitle: { fontSize: 13, fontWeight: '700', color: A, marginBottom: 6 },

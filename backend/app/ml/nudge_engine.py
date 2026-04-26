@@ -113,6 +113,13 @@ PLACE_CATEGORIES = {
 }
 
 
+OUTDOOR_CATEGORIES = {"Park", "Garden", "Green Space", "Nature Reserve", "Riverside Walk"}
+INDOOR_CATEGORIES  = [
+    "Library", "Museum", "Gallery", "Café", "Quiet Café",
+    "Bookshop", "Cinema", "Social Space", "Restaurant", "Market",
+]
+
+
 def generate_nudge(
     stress_category: str,
     mood_label: str,
@@ -120,6 +127,8 @@ def generate_nudge(
     sleep_hours: float,
     hour_of_day: int,
     feedback_history: dict = None,   # {stress_category: [place_types_rated_helpful]}
+    weather_condition: str = "Unknown",
+    weather_temp_c: float = 15.0,
 ) -> NudgeOutput:
     # Select message
     key = (stress_category, mood_label.lower())
@@ -137,6 +146,18 @@ def generate_nudge(
     elif hour_of_day < 10:
         message += " Morning is a good time to set the tone intentionally."
 
+    # Weather-aware message suffix
+    cond = weather_condition.lower()
+    is_wet   = any(w in cond for w in ("rain", "drizzle", "shower", "thunder", "snow", "sleet"))
+    is_hot   = weather_temp_c > 27
+    is_cold  = weather_temp_c < 5
+    if is_wet:
+        message += f" The {weather_condition.lower()} makes indoor options especially worthwhile right now."
+    elif is_hot:
+        message += f" At {weather_temp_c:.0f}°C, somewhere air-conditioned or shaded will be welcome."
+    elif is_cold:
+        message += f" It's {weather_temp_c:.0f}°C outside — somewhere warm to settle into sounds ideal."
+
     # Select CBT prompt
     cbt = random.choice(CBT_PROMPTS.get(stress_category, CBT_PROMPTS["moderate"]))
 
@@ -152,7 +173,6 @@ def generate_nudge(
     if feedback_history and stress_category in feedback_history:
         preferred = feedback_history[stress_category]
         if preferred:
-            # Move preferred types to front, keep primary/secondary as fallback
             place_cats = list(dict.fromkeys(preferred[:2] + primary + secondary))
             rationale += (
                 f" Personalised based on your previous feedback — "
@@ -162,6 +182,22 @@ def generate_nudge(
             place_cats = primary + secondary
     else:
         place_cats = primary + secondary
+
+    # Weather/time adjustment — bias toward indoor when conditions are poor
+    if is_wet or hour_of_day >= 21:
+        indoor_first = [c for c in place_cats if c not in OUTDOOR_CATEGORIES]
+        extras = [c for c in INDOOR_CATEGORIES if c not in indoor_first]
+        place_cats = list(dict.fromkeys(indoor_first + extras))[:3]
+        if is_wet:
+            rationale += f" Indoor venues prioritised due to {weather_condition.lower()} conditions."
+    elif is_hot:
+        cool = ["Museum", "Library", "Gallery", "Café"]
+        place_cats = list(dict.fromkeys(cool + place_cats))[:3]
+        rationale += f" Cool indoor spaces recommended ({weather_temp_c:.0f}°C outside)."
+    elif is_cold and not is_wet:
+        warm = ["Café", "Library", "Bookshop"]
+        place_cats = list(dict.fromkeys(warm + place_cats))[:3]
+        rationale += f" Warm indoor venues prioritised ({weather_temp_c:.0f}°C outside)."
 
     return NudgeOutput(
         message=message,

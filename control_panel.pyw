@@ -78,6 +78,24 @@ def lbl(parent, text, fg=MUT, bg=CARD, size=10, bold=False, anchor="w"):
                     font=(F, size, "bold" if bold else "normal"), anchor=anchor)
 
 
+def _free_port(port: int):
+    """Kill any process occupying *port* on Windows so Expo starts cleanly."""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                pid = int(parts[-1])
+                if pid > 4:  # never kill System (PID 4)
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True, timeout=5)
+    except Exception:
+        pass  # best-effort; Expo will prompt if port is still busy
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Canvas charts
 # ══════════════════════════════════════════════════════════════════════════
@@ -434,22 +452,43 @@ class ControlPanel:
         try:
             import qrcode
             from PIL import ImageTk
-            img  = qrcode.make(url).resize((90,90))
+            img = qrcode.make(url).resize((90, 90))
             self._qr_img = ImageTk.PhotoImage(img)
-            self._qr_canvas.create_image(0,0, image=self._qr_img, anchor="nw")
+            self._qr_canvas.delete("all")
+            self._qr_canvas.create_image(0, 0, image=self._qr_img, anchor="nw")
+            self._log("QR code ready — scan with Expo Go.", "success")
             return
+        except ImportError:
+            # Auto-install qrcode + Pillow, then retry
+            if not getattr(self, '_qr_installing', False):
+                self._qr_installing = True
+                self._log("Installing qrcode library (one-time)...", "warn")
+                threading.Thread(target=self._install_qrcode_pkg, daemon=True).start()
         except Exception:
             pass
-        # Fallback: just show a "ready" indicator on the placeholder
+        # Fallback: draw a symbolic QR with the URL text inside
         c = self._qr_canvas
         c.delete("all")
-        c.create_rectangle(0,0,90,90, fill="#f0f0f0", outline="")
-        for x, y in [(3,3),(58,3),(3,58)]:
-            c.create_rectangle(x,y,x+29,y+29, fill="#1a1a2e", outline="")
-            c.create_rectangle(x+4,y+4,x+25,y+25, fill="#f0f0f0", outline="")
-            c.create_rectangle(x+8,y+8,x+21,y+21, fill="#1a1a2e", outline="")
-        c.create_text(45,58, text="Ready\n(install qrcode\nlib for image)",
-                      fill="#555", font=(F,6), justify=tk.CENTER)
+        c.create_rectangle(0, 0, 90, 90, fill="#f0f0f0", outline="")
+        for x, y in [(3, 3), (58, 3), (3, 58)]:
+            c.create_rectangle(x, y, x+29, y+29, fill="#1a1a2e", outline="")
+            c.create_rectangle(x+4, y+4, x+25, y+25, fill="#f0f0f0", outline="")
+            c.create_rectangle(x+8, y+8, x+21, y+21, fill="#1a1a2e", outline="")
+        c.create_text(45, 72, text="scan URL above", fill="#666",
+                      font=(F, 6), justify=tk.CENTER)
+
+    def _install_qrcode_pkg(self):
+        """Install qrcode[pil] in the background, then redraw QR."""
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", "qrcode[pil]"],
+                capture_output=True, timeout=90)
+            self._qr_installing = False
+            if self._expo_url:
+                self.root.after(0, self._update_qr, self._expo_url)
+        except Exception as e:
+            self.root.after(0, self._log, f"qrcode install failed: {e}", "warn")
+            self._qr_installing = False
 
     # ══════════════════════════════════════════════════════════════════════
     # RIGHT  –  tabbed area
@@ -1179,8 +1218,22 @@ class ControlPanel:
     def _start_expo(self):
         if "expo" in self.procs and self.procs["expo"].poll() is None:
             self._log("Expo already running.", "warn"); return
-        # Note: no CI=true so hot-reload works; ngrok is pre-installed so no prompt
+        # NO_COLOR removes ANSI colour codes from Expo output (easier URL parsing).
+        # Do NOT set CI or EXPO_NO_INTERACTIVE — those prevent Expo from answering
+        # its own "port in use, use 8082?" prompt and cause it to skip the dev server.
         env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+        # Kill old Metro (8081) AND old ngrok (4040) so Expo starts a completely
+        # fresh tunnel session — an orphaned ngrok causes auth failures on restart.
+        _free_port(8081)
+        _free_port(4040)
+        # Also kill any stray ngrok.exe processes by name
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "ngrok.exe"],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        import time as _t; _t.sleep(1)   # let ports fully release
         kw  = {"cwd":FRONTEND, "stdout":subprocess.PIPE,
                "stderr":subprocess.STDOUT, "text":True, "env":env}
         if sys.platform=="win32":
@@ -1210,20 +1263,85 @@ class ControlPanel:
             self.root.after(0, self._log, f"[{name}] {line}", level)
 
     def _tail_expo(self, proc):
-        """Stream Expo output and detect the tunnel URL."""
-        URL_PAT = re.compile(r"exp://[^\s]+")
-        for line in proc.stdout:
-            line = line.rstrip()
-            if not line: continue
-            # detect tunnel URL
-            m = URL_PAT.search(line)
+        """Stream Expo output and detect the tunnel URL.
+
+        Expo SDK 54 uses \r (carriage-return only) to overwrite lines in its
+        interactive display, so a single stdout 'line' may contain multiple
+        \r-delimited sub-lines.  We split on both \n and \r so the URL is
+        never hidden inside a CR-overwritten block.
+        """
+        # Strip CSI, OSC (terminal hyperlinks), and other ANSI/VT sequences
+        ANSI_ESC = re.compile(
+            r'\x1b(?:'
+            r'\[[0-?]*[ -/]*[@-~]'             # CSI  (colour, cursor, etc.)
+            r'|[@-Z\\-_]'                       # Fe 2-char sequences
+            r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'  # OSC  (terminal hyperlinks)
+            r'|[PX^_][^\x1b]*\x1b\\'           # DCS, SOS, PM, APC
+            r')'
+        )
+        # Match all Expo / ngrok tunnel URL formats seen in SDK 50–54
+        URL_PAT = re.compile(
+            r'exp\+?://[^\s\x1b\x07\]\'"\\)><,]+'          # exp:// or exp+slug://
+            r'|https?://[a-zA-Z0-9_\-]+\.exp\.direct[^\s\x1b\x07]*'  # *.exp.direct
+            r'|https?://u\.expo\.dev[^\s\x1b\x07]*'         # u.expo.dev (new format)
+        )
+        # Strip non-printable control chars that survive ANSI removal
+        CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+
+        _ngrok_fetched = [False]  # mutable flag for closure
+
+        def _fetch_ngrok_url():
+            """Query ngrok's local REST API for the Expo tunnel URL.
+            Expo's @expo/ngrok exposes http://localhost:4040/api/tunnels.
+            Retries for up to 15 s in case ngrok hasn't started yet.
+            """
+            import urllib.request, json as _json, time as _time
+            for _ in range(15):
+                try:
+                    with urllib.request.urlopen(
+                        'http://localhost:4040/api/tunnels', timeout=2
+                    ) as r:
+                        data = _json.loads(r.read())
+                        for t in data.get('tunnels', []):
+                            pub = t.get('public_url', '')
+                            # Pick the HTTPS tunnel to .exp.direct
+                            if pub.startswith('https://') and 'exp.direct' in pub:
+                                # Expo Go requires exp:// scheme
+                                url = pub.replace('https://', 'exp://', 1)
+                                _ngrok_fetched[0] = True
+                                self.root.after(0, self._update_qr, url)
+                                return
+                except Exception:
+                    pass
+                _time.sleep(1)
+
+        def _process_subline(raw: str):
+            """Handle one logical line (after \\n / \\r split)."""
+            raw = raw.strip()
+            if not raw:
+                return
+            clean = CTRL.sub('', ANSI_ESC.sub('', raw))
+            if not clean:
+                return
+            # Primary: regex match in stdout (works for older Expo / plain-text mode)
+            m = URL_PAT.search(clean)
             if m:
-                self.root.after(0, self._update_qr, m.group(0))
-            level = ("error"   if "Error" in line or "error" in line
-                     else "success" if "Tunnel ready" in line or "connected" in line.lower()
-                     else "warn"    if "warn" in line.lower() or "deprecated" in line.lower()
+                url = m.group(0).rstrip('/.,;:\x07')
+                _ngrok_fetched[0] = True
+                self.root.after(0, self._update_qr, url)
+            # Secondary: when "Tunnel ready." appears, fall back to ngrok REST API
+            if 'Tunnel ready' in clean and not _ngrok_fetched[0]:
+                threading.Thread(target=_fetch_ngrok_url, daemon=True).start()
+            level = ("error"   if "Error" in clean or "error" in clean
+                     else "success" if "Tunnel ready" in clean or "connected" in clean.lower()
+                     else "warn"    if "warn" in clean.lower() or "deprecated" in clean.lower()
                      else "info")
-            self.root.after(0, self._log, f"[expo] {line}", level)
+            self.root.after(0, self._log, f"[expo] {clean}", level)
+
+        for line in proc.stdout:
+            # Split on \r so CR-only line updates are each processed separately
+            for subline in line.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+                _process_subline(subline)
 
     def _stop_all(self):
         for name, p in list(self.procs.items()):
@@ -1231,6 +1349,14 @@ class ControlPanel:
             except Exception: pass
         self.procs.clear()
         self._progress["value"] = 0
+        # Kill orphaned ngrok so next Start gets a clean tunnel session
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "ngrok.exe"],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        _free_port(4040)
+        _free_port(8081)
 
     # ══════════════════════════════════════════════════════════════════════
     # Training actions
@@ -1242,12 +1368,23 @@ class ControlPanel:
     def _do_retrain(self):
         self.root.after(0, self._tlog, "Triggering retrain...")
         try:
-            d   = self._api_post("/api/retrain")
-            f1n = d.get("new_f1_weighted",0)
-            f1o = d.get("old_f1_weighted",0)
-            msg = f"Retrain done  -  F1 {f1o:.3f} -> {f1n:.3f}"
-            self.root.after(0, self._tlog, msg)
-            self.root.after(0, self._log,  msg, "success")
+            d      = self._api_post("/api/retrain")
+            status = d.get("status", "unknown")
+            if status == "skipped":
+                reason = d.get("reason", "Not enough data")
+                avail  = d.get("entries_available", "?")
+                msg    = f"Skipped — {reason}"
+                hint   = f"  Tip: click 'Seed Data Only' first (need ≥ 10 entries, have {avail})."
+                self.root.after(0, self._tlog, msg)
+                self.root.after(0, self._log,  msg, "warn")
+                self.root.after(0, self._log,  hint, "info")
+            else:
+                f1n = d.get("new_f1_weighted", 0)
+                f1o = d.get("old_f1_weighted", 0)
+                saved = "saved" if d.get("improved", True) else "not saved (no improvement)"
+                msg = f"Retrain {saved}  —  F1 {f1o:.3f} → {f1n:.3f}"
+                self.root.after(0, self._tlog, msg)
+                self.root.after(0, self._log,  msg, "success")
         except Exception as e:
             self.root.after(0, self._tlog, f"Error: {e}")
             self.root.after(0, self._log,  f"Retrain failed: {e}", "error")

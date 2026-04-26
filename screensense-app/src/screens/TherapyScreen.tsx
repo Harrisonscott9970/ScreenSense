@@ -3,11 +3,45 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   TextInput, Animated, Easing,
 } from 'react-native';
+
+function FadeIn({ delay = 0, children, style }: { delay?: number; children: React.ReactNode; style?: any }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(anim, { toValue: 1, duration: 400, delay, useNativeDriver: true }).start();
+  }, []);
+  return (
+    <Animated.View style={[style, {
+      opacity: anim,
+      transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+    }]}>
+      {children}
+    </Animated.View>
+  );
+}
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { api } from '../services/api';
+
+async function getStoredUserId(): Promise<string> {
+  try { return (await AsyncStorage.getItem('ss_user_id')) || 'anonymous'; } catch { return 'anonymous'; }
+}
+
+async function logIntervention(tool: string, extra?: Record<string, any>) {
+  try {
+    const uid = await getStoredUserId();
+    await api.logIntervention(uid, tool, extra);
+    // Also update local breathing session count for immediate ProfileScreen update
+    if (tool === 'breathing') {
+      const prev = await AsyncStorage.getItem('ss_breathing_sessions');
+      const sessions = prev ? JSON.parse(prev) : [];
+      sessions.push({ cycles: extra?.cycles ?? 0, ts: new Date().toISOString() });
+      await AsyncStorage.setItem('ss_breathing_sessions', JSON.stringify(sessions));
+    }
+  } catch {}
+}
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
-      MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
+      MUT = 'rgba(238,240,255,0.55)', SUB = 'rgba(238,240,255,0.32)',
       CARD = 'rgba(255,255,255,0.04)', BOR = 'rgba(255,255,255,0.08)';
 
 type Tool = 'breathing' | 'cbt' | 'gratitude' | 'mindfulness' | null;
@@ -22,41 +56,45 @@ export default function TherapyScreen() {
 
   return (
     <ScrollView style={s.root} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-      <View style={s.hero}>
-        <Text style={s.heroGreet}>Therapy tools</Text>
-        <Text style={s.heroH}>Daily mental{'\n'}wellness</Text>
-        <Text style={s.heroSub}>Evidence-based CBT, mindfulness, and journaling techniques</Text>
-      </View>
+      <FadeIn delay={0}>
+        <View style={s.hero}>
+          <Text style={s.heroGreet}>Therapy tools</Text>
+          <Text style={s.heroH}>Daily mental{'\n'}wellness</Text>
+          <Text style={s.heroSub}>Evidence-based CBT, mindfulness, and journaling</Text>
+        </View>
+      </FadeIn>
 
-      <Text style={s.sectionLabel}>Choose a tool</Text>
+      <FadeIn delay={100}>
+        <Text style={s.sectionLabel}>Choose a tool</Text>
+      </FadeIn>
 
-      <View style={s.toolGrid}>
-        <ToolCard
-          icon="🫁" title="Guided breathing" sub="4-7-8 technique · reduces anxiety"
-          color={C} onPress={() => setActiveTool('breathing')}
-          badge="CBT-backed"
-        />
-        <ToolCard
-          icon="🧠" title="Thought challenger" sub="Identify & reframe cognitive distortions"
-          color={V} onPress={() => setActiveTool('cbt')}
-          badge="CBT technique"
-        />
-        <ToolCard
-          icon="🙏" title="Gratitude log" sub="3 things daily · builds resilience"
-          color={G} onPress={() => setActiveTool('gratitude')}
-          badge="Positive psychology"
-        />
-        <ToolCard
-          icon="🧘" title="Mindfulness timer" sub="Body scan · present-moment awareness"
-          color={A} onPress={() => setActiveTool('mindfulness')}
-          badge="Mindfulness-based"
-        />
-      </View>
+      <FadeIn delay={160}>
+        <View style={s.toolGrid}>
+          <ToolCard
+            icon="🫁" title="Guided breathing" sub="4-7-8 technique · reduces anxiety"
+            color={C} onPress={() => setActiveTool('breathing')} badge="CBT-backed"
+          />
+          <ToolCard
+            icon="🧠" title="Thought challenger" sub="Identify & reframe cognitive distortions"
+            color={V} onPress={() => setActiveTool('cbt')} badge="CBT technique"
+          />
+          <ToolCard
+            icon="🙏" title="Gratitude log" sub="3 things daily · builds resilience"
+            color={G} onPress={() => setActiveTool('gratitude')} badge="Positive psychology"
+          />
+          <ToolCard
+            icon="🧘" title="Mindfulness timer" sub="Body scan · present-moment awareness"
+            color={A} onPress={() => setActiveTool('mindfulness')} badge="Mindfulness-based"
+          />
+        </View>
+      </FadeIn>
 
-      <View style={s.infoCard}>
-        <Text style={s.infoTitle}>Why these tools?</Text>
-        <Text style={s.infoTxt}>These techniques are drawn from Cognitive Behavioural Therapy (Beck, 1979), Mindfulness-Based Stress Reduction (Kabat-Zinn, 1990), and Positive Psychology (Seligman, 2002). Each is evidence-based with clinical support for reducing anxiety, stress, and low mood.</Text>
-      </View>
+      <FadeIn delay={280}>
+        <View style={s.infoCard}>
+          <Text style={s.infoTitle}>Research basis</Text>
+          <Text style={s.infoTxt}>CBT (Beck, 1979) · MBSR (Kabat-Zinn, 1990) · Positive Psychology (Seligman, 2002). Each tool has clinical evidence for reducing anxiety and low mood.</Text>
+        </View>
+      </FadeIn>
 
       <View style={{ height: 60 }} />
     </ScrollView>
@@ -135,7 +173,15 @@ function BreathingExercise({ onBack }: { onBack: () => void }) {
       {cycles > 0 && <Text style={s.cyclesTxt}>{cycles} {cycles === 1 ? 'cycle' : 'cycles'} completed</Text>}
 
       <TouchableOpacity style={[s.toolBtn, { backgroundColor: running ? R : C }]}
-        onPress={() => { if (running) { setRunning(false); clearInterval(intervalRef.current); } else start(); }}>
+        onPress={() => {
+          if (running) {
+            setRunning(false);
+            clearInterval(intervalRef.current);
+            if (cycles > 0) logIntervention('breathing', { cycles, duration_mins: (cycles * 21) / 60 });
+          } else {
+            start();
+          }
+        }}>
         <Text style={s.toolBtnTxt}>{running ? 'Stop' : 'Start breathing exercise'}</Text>
       </TouchableOpacity>
 
@@ -185,6 +231,10 @@ function CBTChallenger({ onBack }: { onBack: () => void }) {
 
   const current = steps[step];
   const complete = step >= steps.length;
+
+  useEffect(() => {
+    if (complete) logIntervention('cbt');
+  }, [complete]);
 
   return (
     <View style={s.toolScreen}>
@@ -237,7 +287,9 @@ function CBTChallenger({ onBack }: { onBack: () => void }) {
             <Text style={s.cbtResultLabel}>Reframed thought</Text>
             <Text style={s.cbtResultTxt}>{reframe}</Text>
           </View>
-          <TouchableOpacity style={s.toolBtn} onPress={() => { setStep(0); setThought(''); setDistortion(''); setReframe(''); setEvidence(''); }}>
+          <TouchableOpacity style={s.toolBtn} onPress={() => {
+            setStep(0); setThought(''); setDistortion(''); setReframe(''); setEvidence('');
+          }}>
             <Text style={s.toolBtnTxt}>Start again</Text>
           </TouchableOpacity>
         </View>
@@ -259,6 +311,7 @@ function GratitudeLog({ onBack }: { onBack: () => void }) {
       existing.unshift({ date: new Date().toISOString(), entries: filled });
       return AsyncStorage.setItem('ss_gratitude', JSON.stringify(existing.slice(0, 30)));
     }).catch(() => {});
+    logIntervention('gratitude', { duration_mins: 5 });
     setSaved(true);
   };
 
@@ -339,6 +392,10 @@ function MindfulnessTimer({ onBack }: { onBack: () => void }) {
   }, [running]);
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  useEffect(() => {
+    if (done) logIntervention('mindfulness', { duration_mins: duration });
+  }, [done]);
 
   return (
     <View style={s.toolScreen}>

@@ -57,9 +57,9 @@ export const C = {
 
   // Text — 4 levels only
   text:    '#F1F3FF',       // primary
-  textSub: 'rgba(241,243,255,0.60)',  // secondary
-  textDim: 'rgba(241,243,255,0.35)',  // tertiary
-  textGhost:'rgba(241,243,255,0.18)', // disabled / placeholder
+  textSub: 'rgba(241,243,255,0.65)',  // secondary
+  textDim: 'rgba(241,243,255,0.42)',  // tertiary
+  textGhost:'rgba(241,243,255,0.28)', // disabled / placeholder
 
   // Dividers
   line:    'rgba(255,255,255,0.06)',

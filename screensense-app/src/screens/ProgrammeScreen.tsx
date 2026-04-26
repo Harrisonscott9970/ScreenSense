@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
-      MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
+      MUT = 'rgba(238,240,255,0.55)', SUB = 'rgba(238,240,255,0.32)',
       CARD = 'rgba(255,255,255,0.05)', BOR = 'rgba(255,255,255,0.09)';
 
 const PROGRAMMES = [

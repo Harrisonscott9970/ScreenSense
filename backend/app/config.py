@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     foursquare_api_key: str = ""
     google_maps_key: str = ""
 
+    # External API URLs
+    open_meteo_url: str = "https://api.open-meteo.com/v1/forecast"
+    foursquare_url: str = "https://api.foursquare.com/v3/places/search"
+
     # CORS
     allowed_origins: str = "*"
 

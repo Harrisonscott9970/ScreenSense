@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Animated,
-  Dimensions, Easing,
+  Dimensions, Easing, ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -9,6 +9,15 @@ const { width } = Dimensions.get('window');
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', TXT = '#EEF0FF', MUT = 'rgba(238,240,255,0.5)',
       SUB = 'rgba(238,240,255,0.25)';
+
+const ARCHETYPES = [
+  { id: 'student',        label: 'Student',        icon: '🎓', desc: 'Irregular hours, late nights, exam stress' },
+  { id: 'professional',  label: 'Professional',   icon: '💼', desc: '9–5 routine, work-life balance challenges' },
+  { id: 'shift_worker',  label: 'Shift worker',   icon: '🔄', desc: 'Variable schedules, disrupted sleep cycles' },
+  { id: 'athlete',       label: 'Athlete',         icon: '🏃', desc: 'High physical activity, recovery-focused' },
+  { id: 'chronic_stress',label: 'High stress',     icon: '⚡', desc: 'Persistent pressure, burnout risk' },
+  { id: 'recovering',    label: 'Recovery',        icon: '🌱', desc: 'Managing anxiety, building healthy habits' },
+];
 
 const SLIDES = [
   {
@@ -45,12 +54,15 @@ interface OnboardingProps {
   onComplete: () => void;
 }
 
+const TOTAL_STEPS = SLIDES.length + 1; // +1 for archetype selection
+
 export default function OnboardingScreen({ onComplete }: OnboardingProps) {
   const [slide, setSlide] = useState(0);
+  const [archetype, setArchetype] = useState<string | null>(null);
   const fadeAnim  = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
-  const dotAnims  = useRef(SLIDES.map((_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
+  const dotAnims  = useRef(Array.from({ length: TOTAL_STEPS }, (_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
 
   // Breathing orb
   const breathe = useRef(new Animated.Value(0)).current;
@@ -83,52 +95,83 @@ export default function OnboardingScreen({ onComplete }: OnboardingProps) {
   };
 
   const next = () => {
-    if (slide < SLIDES.length - 1) goTo(slide + 1);
-    else {
-      AsyncStorage.setItem('ss_onboarded', 'true').catch(() => {});
-      onComplete();
+    if (slide < SLIDES.length - 1) {
+      goTo(slide + 1);
+    } else if (slide === SLIDES.length - 1) {
+      // Move to archetype selection step
+      goTo(SLIDES.length);
+    } else {
+      // Archetype step — complete onboarding
+      const chosen = archetype || 'student';
+      Promise.all([
+        AsyncStorage.setItem('ss_onboarded', 'true'),
+        AsyncStorage.setItem('ss_archetype', chosen),
+      ]).catch(() => {}).finally(() => onComplete());
     }
   };
 
-  const current = SLIDES[slide];
+  const isArchetypeStep = slide === SLIDES.length;
+  const current = isArchetypeStep ? null : SLIDES[slide];
+
+  const accentColor = current ? current.color : V;
 
   return (
     <View style={s.root}>
       {/* Background orb */}
-      <Animated.View style={[s.bgOrb, { backgroundColor: current.color + '18', transform: [{ scale: orbScale }] }]} />
-      <View style={[s.bgOrb2, { backgroundColor: current.color + '08' }]} />
+      <Animated.View style={[s.bgOrb, { backgroundColor: accentColor + '18', transform: [{ scale: orbScale }] }]} />
+      <View style={[s.bgOrb2, { backgroundColor: accentColor + '08' }]} />
 
-      {/* Skip */}
-      <TouchableOpacity style={s.skip} onPress={() => { AsyncStorage.setItem('ss_onboarded', 'true').catch(() => {}); onComplete(); }}>
-        <Text style={s.skipTxt}>Skip</Text>
-      </TouchableOpacity>
+      {/* Skip — hide on archetype step */}
+      {!isArchetypeStep && (
+        <TouchableOpacity style={s.skip} onPress={() => { AsyncStorage.setItem('ss_onboarded', 'true').catch(() => {}); onComplete(); }}>
+          <Text style={s.skipTxt}>Skip</Text>
+        </TouchableOpacity>
+      )}
 
-      {/* Content */}
-      <Animated.View style={[s.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }]}>
+      {/* Info slides content */}
+      {!isArchetypeStep && current && (
+        <Animated.View style={[s.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }]}>
+          <View style={[s.iconOrb, { backgroundColor: current.color + '22', borderColor: current.color + '50' }]}>
+            <Text style={s.icon}>{current.icon}</Text>
+          </View>
+          <View style={[s.badge, { backgroundColor: current.color + '18', borderColor: current.color + '35' }]}>
+            <Text style={[s.badgeTxt, { color: current.color }]}>{current.badge}</Text>
+          </View>
+          <Text style={s.title}>{current.title}</Text>
+          <Text style={s.sub}>{current.sub}</Text>
+        </Animated.View>
+      )}
 
-        {/* Icon orb */}
-        <View style={[s.iconOrb, { backgroundColor: current.color + '22', borderColor: current.color + '50' }]}>
-          <Text style={s.icon}>{current.icon}</Text>
-        </View>
-
-        {/* Badge */}
-        <View style={[s.badge, { backgroundColor: current.color + '18', borderColor: current.color + '35' }]}>
-          <Text style={[s.badgeTxt, { color: current.color }]}>{current.badge}</Text>
-        </View>
-
-        {/* Title */}
-        <Text style={s.title}>{current.title}</Text>
-
-        {/* Sub */}
-        <Text style={s.sub}>{current.sub}</Text>
-
-      </Animated.View>
+      {/* Archetype selection step */}
+      {isArchetypeStep && (
+        <Animated.View style={[s.archetypeWrap, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <Text style={s.archetypeTitle}>What best describes you?</Text>
+          <Text style={s.archetypeSub}>
+            This personalises your stress model to your lifestyle pattern.{'\n'}
+            You can change this later in Settings.
+          </Text>
+          <View style={s.archetypeGrid}>
+            {ARCHETYPES.map(a => (
+              <TouchableOpacity
+                key={a.id}
+                style={[s.archetypeTile, archetype === a.id && s.archetypeTileOn]}
+                onPress={() => setArchetype(a.id)}
+                activeOpacity={0.8}
+              >
+                <Text style={s.archetypeIcon}>{a.icon}</Text>
+                <Text style={[s.archetypeLabel, archetype === a.id && { color: VL }]}>{a.label}</Text>
+                <Text style={s.archetypeDesc}>{a.desc}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Animated.View>
+      )}
 
       {/* Dots */}
       <View style={s.dots}>
-        {SLIDES.map((sl, i) => (
+        {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
           <Animated.View key={i} style={[s.dot, {
-            backgroundColor: current.color,
+            backgroundColor: accentColor,
             width: dotAnims[i].interpolate({ inputRange: [0, 1], outputRange: [8, 24] }),
             opacity: dotAnims[i].interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }),
           }]} />
@@ -137,13 +180,21 @@ export default function OnboardingScreen({ onComplete }: OnboardingProps) {
 
       {/* CTA */}
       <View style={s.ctaWrap}>
-        <TouchableOpacity style={[s.cta, { backgroundColor: current.color }]} onPress={next} activeOpacity={0.88}>
+        <TouchableOpacity
+          style={[s.cta, { backgroundColor: accentColor }, isArchetypeStep && !archetype && s.ctaDisabled]}
+          onPress={next}
+          activeOpacity={0.88}
+          disabled={isArchetypeStep && !archetype}
+        >
           <Text style={s.ctaTxt}>
-            {slide < SLIDES.length - 1 ? 'Next  →' : 'Get started  →'}
+            {isArchetypeStep ? 'Get started  →' : slide < SLIDES.length - 1 ? 'Next  →' : 'Next  →'}
           </Text>
         </TouchableOpacity>
         {slide === 0 && (
           <Text style={s.legalTxt}>Your data is stored locally · No ads · GDPR compliant</Text>
+        )}
+        {isArchetypeStep && !archetype && (
+          <Text style={s.legalTxt}>Select a profile to continue</Text>
         )}
       </View>
     </View>
@@ -175,6 +226,20 @@ const s = StyleSheet.create({
 
   ctaWrap: { width: '100%', maxWidth: 400 },
   cta: { borderRadius: 16, padding: 18, alignItems: 'center', shadowOpacity: 0.4, shadowRadius: 24, shadowOffset: { width: 0, height: 8 }, elevation: 12 },
+  ctaDisabled: { opacity: 0.4 },
   ctaTxt: { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
   legalTxt: { fontSize: 11, color: SUB, textAlign: 'center', marginTop: 10 },
+
+  archetypeWrap: { alignItems: 'center', width: '100%', maxWidth: 500, marginBottom: 16 },
+  archetypeTitle: { fontSize: 30, fontWeight: '900', color: TXT, textAlign: 'center', letterSpacing: -0.8, lineHeight: 36, marginBottom: 10 },
+  archetypeSub: { fontSize: 13, color: MUT, textAlign: 'center', lineHeight: 20, marginBottom: 20 },
+  archetypeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center', width: '100%' },
+  archetypeTile: {
+    width: '46%', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 14,
+    padding: 14, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.08)', alignItems: 'center',
+  },
+  archetypeTileOn: { borderColor: VL, backgroundColor: 'rgba(108,99,255,0.15)' },
+  archetypeIcon: { fontSize: 28, marginBottom: 6 },
+  archetypeLabel: { fontSize: 13, fontWeight: '700', color: TXT, marginBottom: 4 },
+  archetypeDesc: { fontSize: 10, color: MUT, textAlign: 'center', lineHeight: 14 },
 });

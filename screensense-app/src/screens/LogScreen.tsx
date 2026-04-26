@@ -1,15 +1,30 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  ActivityIndicator, RefreshControl,
+  ActivityIndicator, RefreshControl, Animated, TextInput,
 } from 'react-native';
+
+function FadeIn({ delay = 0, children }: { delay?: number; children: React.ReactNode }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(anim, { toValue: 1, duration: 380, delay, useNativeDriver: true }).start();
+  }, []);
+  return (
+    <Animated.View style={{
+      opacity: anim,
+      transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
+    }}>
+      {children}
+    </Animated.View>
+  );
+}
 import { format } from 'date-fns';
 
 import { BASE_URL } from '../services/api';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
-      MUT = 'rgba(238,240,255,0.48)', SUB = 'rgba(238,240,255,0.22)',
+      MUT = 'rgba(238,240,255,0.55)', SUB = 'rgba(238,240,255,0.32)',
       CARD = 'rgba(255,255,255,0.04)', BOR = 'rgba(255,255,255,0.08)';
 
 const MOOD_COL: Record<string, string> = {
@@ -26,21 +41,52 @@ interface LogScreenProps {
   userId?: string;
 }
 
+const MOODS_ALL = ['all', 'joyful', 'content', 'calm', 'energised', 'anxious', 'stressed', 'low', 'numb'];
+const DATE_FILTERS = ['all', 'today', 'week', 'month'] as const;
+type DateFilter = typeof DATE_FILTERS[number];
+
 export default function LogScreen({ userId = 'user_001' }: LogScreenProps) {
   const [entries, setEntries] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [moodFilter, setMoodFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
+  const [search, setSearch] = useState('');
 
   const load = useCallback(async () => {
     try {
-      const data = await fetch(`${BASE_URL}/entries/${userId}?limit=50`).then(r => r.json());
+      const data = await fetch(`${BASE_URL}/entries/${userId}?limit=100`).then(r => r.json());
       setEntries(Array.isArray(data) ? data : []);
     } catch { setEntries([]); }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
 
   useEffect(() => { load(); }, []);
+
+  const filtered = useMemo(() => {
+    const now = new Date();
+    return entries.filter(e => {
+      if (moodFilter !== 'all' && e.mood_label !== moodFilter) return false;
+      if (dateFilter !== 'all') {
+        const d = new Date(e.created_at);
+        if (dateFilter === 'today') {
+          if (d.toDateString() !== now.toDateString()) return false;
+        } else if (dateFilter === 'week') {
+          const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
+          if (d < weekAgo) return false;
+        } else if (dateFilter === 'month') {
+          const monthAgo = new Date(now); monthAgo.setMonth(now.getMonth() - 1);
+          if (d < monthAgo) return false;
+        }
+      }
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        return (e.mood_label?.includes(q) || e.journal_text?.toLowerCase().includes(q) || e.personalised_message?.toLowerCase().includes(q));
+      }
+      return true;
+    });
+  }, [entries, moodFilter, dateFilter, search]);
 
   if (loading) return (
     <View style={[s.root, { alignItems: 'center', justifyContent: 'center' }]}>
@@ -53,25 +99,82 @@ export default function LogScreen({ userId = 'user_001' }: LogScreenProps) {
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={V} />}
     >
-      <View style={s.hero}>
-        <Text style={s.heroGreet}>Your history</Text>
-        <Text style={s.heroH}>Mood log</Text>
-        <Text style={s.heroSub}>{entries.length} entries · pull to refresh</Text>
-      </View>
-
-      {entries.length === 0 ? (
-        <View style={s.empty}>
-          <Text style={{ fontSize: 44, marginBottom: 12 }}>📓</Text>
-          <Text style={s.emptyTitle}>No entries yet</Text>
-          <Text style={s.muted}>Complete a check-in to start building your mood log.</Text>
+      <FadeIn delay={0}>
+        <View style={s.hero}>
+          <Text style={s.heroGreet}>Your history</Text>
+          <Text style={s.heroH}>Mood log</Text>
+          <Text style={s.heroSub}>{filtered.length} of {entries.length} entries · pull to refresh</Text>
         </View>
+      </FadeIn>
+
+      {/* Search bar */}
+      <FadeIn delay={40}>
+        <TextInput
+          style={s.searchInput}
+          placeholder="Search journal, mood, messages…"
+          placeholderTextColor={SUB}
+          value={search}
+          onChangeText={setSearch}
+        />
+      </FadeIn>
+
+      {/* Mood filter chips */}
+      <FadeIn delay={60}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filterRow} contentContainerStyle={{ gap: 6, paddingHorizontal: 2 }}>
+          {MOODS_ALL.map(m => (
+            <TouchableOpacity
+              key={m}
+              style={[s.filterChip, moodFilter === m && s.filterChipOn]}
+              onPress={() => setMoodFilter(m)}
+            >
+              <Text style={[s.filterChipTxt, moodFilter === m && { color: VL }]}>
+                {m === 'all' ? 'All moods' : MOOD_EMO[m] + ' ' + m}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </FadeIn>
+
+      {/* Date filter */}
+      <FadeIn delay={80}>
+        <View style={s.dateRow}>
+          {DATE_FILTERS.map(d => (
+            <TouchableOpacity key={d} style={[s.dateChip, dateFilter === d && s.dateChipOn]} onPress={() => setDateFilter(d)}>
+              <Text style={[s.dateChipTxt, dateFilter === d && { color: VL }]}>
+                {{ all: 'All time', today: 'Today', week: 'This week', month: 'This month' }[d]}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </FadeIn>
+
+      {filtered.length === 0 ? (
+        <FadeIn delay={100}>
+          <View style={s.empty}>
+            {entries.length === 0 ? (
+              <>
+                <Text style={{ fontSize: 44, marginBottom: 12 }}>📓</Text>
+                <Text style={s.emptyTitle}>No entries yet</Text>
+                <Text style={s.muted}>Complete a check-in to start building your mood log.</Text>
+              </>
+            ) : (
+              <>
+                <Text style={{ fontSize: 36, marginBottom: 12 }}>🔍</Text>
+                <Text style={s.emptyTitle}>No matches</Text>
+                <Text style={s.muted}>Try a different mood or date filter.</Text>
+              </>
+            )}
+          </View>
+        </FadeIn>
       ) : (
-        entries.map(e => (
-          <EntryCard
-            key={e.id} entry={e}
-            isExpanded={expanded === e.id}
-            onPress={() => setExpanded(expanded === e.id ? null : e.id)}
-          />
+        filtered.map((e, i) => (
+          <FadeIn key={e.id} delay={80 + Math.min(i, 8) * 40}>
+            <EntryCard
+              entry={e}
+              isExpanded={expanded === e.id}
+              onPress={() => setExpanded(expanded === e.id ? null : e.id)}
+            />
+          </FadeIn>
         ))
       )}
       <View style={{ height: 60 }} />
@@ -185,6 +288,19 @@ const s = StyleSheet.create({
   heroH: { fontSize: 36, fontWeight: '800', color: TXT, letterSpacing: -1, marginBottom: 4 },
   heroSub: { fontSize: 13, color: MUT },
 
+  searchInput: {
+    backgroundColor: CARD, borderRadius: 12, borderWidth: 0.5, borderColor: BOR,
+    paddingHorizontal: 16, paddingVertical: 10, color: TXT, fontSize: 13,
+    marginBottom: 10,
+  },
+  filterRow: { marginBottom: 8 },
+  filterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 99, backgroundColor: CARD, borderWidth: 0.5, borderColor: BOR },
+  filterChipOn: { borderColor: VL, backgroundColor: 'rgba(108,99,255,0.14)' },
+  filterChipTxt: { fontSize: 11, color: MUT, fontWeight: '600', textTransform: 'capitalize' },
+  dateRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' },
+  dateChip: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 99, backgroundColor: CARD, borderWidth: 0.5, borderColor: BOR },
+  dateChipOn: { borderColor: VL, backgroundColor: 'rgba(108,99,255,0.14)' },
+  dateChipTxt: { fontSize: 11, color: MUT, fontWeight: '600' },
   empty: { alignItems: 'center', paddingTop: 60 },
   emptyTitle: { fontSize: 18, fontWeight: '700', color: TXT, marginBottom: 8 },
 
