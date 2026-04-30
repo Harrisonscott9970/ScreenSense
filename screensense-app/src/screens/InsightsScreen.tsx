@@ -960,29 +960,74 @@ function MoodFrequency({ freq, total }: { freq: Record<string, number>; total: n
 
 function ScatterPlot({ data }: { data: any[] }) {
   const W = Math.min(width - 80, 620);
-  const H = 140;
+  const PLOT_W = W - 80;  // usable plot width after left padding
+  const H = 150;           // plot height
+  const PAD_L = 58, PAD_T = 22, PAD_B = 36;
+
   if (!data?.length) return (
     <View style={[s.scatterWrap, { padding: 20, alignItems: 'center' }]}>
       <Text style={s.muted}>Not enough data yet — each dot is one check-in.</Text>
     </View>
   );
+
+  const pts = data.slice(0, 40);
+
+  // Linear regression to show correlation direction
+  const n = pts.length;
+  const mx = pts.reduce((s, d) => s + d.screen, 0) / n;
+  const my = pts.reduce((s, d) => s + d.stress, 0) / n;
+  const num = pts.reduce((s, d) => s + (d.screen - mx) * (d.stress - my), 0);
+  const den = pts.reduce((s, d) => s + (d.screen - mx) ** 2, 0);
+  const slope = den > 0 ? num / den : 0;
+  const intercept = my - slope * mx;
+
+  // Map regression endpoints from data-space → pixel-space
+  const toX = (sc: number) => PAD_L + (sc / 12) * PLOT_W;
+  const toY = (st: number) => PAD_T + H - st * H;
+  const rx1 = toX(0),   ry1 = toY(intercept);
+  const rx2 = toX(12),  ry2 = toY(slope * 12 + intercept);
+  const lineLen = Math.sqrt((rx2 - rx1) ** 2 + (ry2 - ry1) ** 2);
+  const lineAngle = Math.atan2(ry2 - ry1, rx2 - rx1) * (180 / Math.PI);
+
   return (
-    <View style={[s.scatterWrap, { height: H + 52, paddingTop: 18, paddingLeft: 56, paddingRight: 10 }]}>
-      {/* Y-axis labels */}
-      <Text style={[s.axisLbl, { top: 16, left: 4 }]}>High stress</Text>
-      <Text style={[s.axisLbl, { bottom: 30, left: 4 }]}>Low stress</Text>
-      {/* X-axis labels */}
-      <Text style={[s.axisLbl, { bottom: 14, left: 56, fontWeight: '700' }]}>0h screen time →</Text>
-      <Text style={[s.axisLbl, { bottom: 14, right: 10 }]}>12h</Text>
-      {/* Dots */}
-      {data.slice(0, 25).map((d, i) => {
-        const x = (d.screen / 12) * (W - 80) + 56;
-        const y = H - d.stress * H + 16;
+    <View style={[s.scatterWrap, { height: H + PAD_T + PAD_B }]}>
+      {/* Y-axis label (rotated text not supported natively — use stacked chars) */}
+      <Text style={[s.axisLbl, { top: PAD_T + 2, left: 4 }]}>High</Text>
+      <Text style={[s.axisLbl, { top: PAD_T + H / 2 - 6, left: 2, color: MUT, fontSize: 8 }]}>stress</Text>
+      <Text style={[s.axisLbl, { top: PAD_T + H - 10, left: 6 }]}>Low</Text>
+
+      {/* Grid lines */}
+      {[0.25, 0.5, 0.75].map(p => (
+        <View key={p} style={{ position: 'absolute', left: PAD_L, right: 8, top: PAD_T + H - p * H, height: 1, backgroundColor: 'rgba(255,255,255,0.05)' }} />
+      ))}
+
+      {/* Regression trendline — thin rotated view */}
+      <View style={{
+        position: 'absolute',
+        left: rx1, top: ry1 - 0.5,
+        width: lineLen, height: 1.5,
+        backgroundColor: 'rgba(108,99,255,0.45)',
+        transform: [{ rotate: `${lineAngle}deg` }],
+        transformOrigin: '0 50%' as any,
+      }} />
+
+      {/* Dots — each check-in */}
+      {pts.map((d, i) => {
+        const x = toX(d.screen) - 5;
+        const y = toY(d.stress) - 5;
         const col = MOOD_COL[d.mood] || VL;
-        return <View key={i} style={[s.dot, { left: x, top: y, backgroundColor: col }]} />;
+        return (
+          <View key={i} style={[s.dot, { left: x, top: y, backgroundColor: col, opacity: 0.88 }]} />
+        );
       })}
-      <Text style={[s.axisLbl, { bottom: 2, left: 56, color: MUT, fontSize: 8 }]}>
-        Each dot = one check-in · colour = mood
+
+      {/* X-axis */}
+      <View style={{ position: 'absolute', left: PAD_L, right: 8, top: PAD_T + H, height: 1, backgroundColor: 'rgba(255,255,255,0.10)' }} />
+      <Text style={[s.axisLbl, { top: PAD_T + H + 5, left: PAD_L }]}>0h</Text>
+      <Text style={[s.axisLbl, { top: PAD_T + H + 5, left: PAD_L + PLOT_W * 0.5 - 8 }]}>6h</Text>
+      <Text style={[s.axisLbl, { top: PAD_T + H + 5, right: 8 }]}>12h</Text>
+      <Text style={[s.axisLbl, { top: PAD_T + H + 18, left: PAD_L, color: MUT, fontSize: 8 }]}>
+        ← screen time per day →  ·  each dot = one check-in, colour = mood
       </Text>
     </View>
   );

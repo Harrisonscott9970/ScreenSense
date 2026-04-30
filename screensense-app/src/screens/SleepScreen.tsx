@@ -4,6 +4,7 @@ import {
   TextInput, Animated, Switch,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { api } from '../services/api';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', INDIGO = '#7986CB', TXT = '#EEF0FF',
@@ -26,7 +27,11 @@ const SLEEP_TIPS = [
   { title: 'Worry journal', desc: 'Write tomorrow\'s tasks before bed. Offloads working memory.', color: VL, icon: '📝' },
 ];
 
-export default function SleepScreen() {
+interface SleepProps {
+  userId?: string;
+}
+
+export default function SleepScreen({ userId }: SleepProps) {
   const [tab, setTab] = useState<'tracker' | 'winddown' | 'tips'>('tracker');
   const [bedtime, setBedtime] = useState('23:00');
   const [wakeTime, setWakeTime] = useState('07:00');
@@ -37,10 +42,20 @@ export default function SleepScreen() {
   const [screenFree, setScreenFree] = useState(false);
 
   useEffect(() => {
+    // Load local first (offline-first), then hydrate from server
     AsyncStorage.getItem('ss_sleep').then(v => {
       try { if (v) setEntries(JSON.parse(v)); } catch {}
     }).catch(() => {});
-  }, []);
+
+    if (userId) {
+      api.getSleep(userId).then(serverEntries => {
+        if (serverEntries?.length > 0) {
+          setEntries(serverEntries);
+          AsyncStorage.setItem('ss_sleep', JSON.stringify(serverEntries)).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+  }, [userId]);
 
   const save = () => {
     const entry = {
@@ -52,6 +67,9 @@ export default function SleepScreen() {
     const updated = [entry, ...entries.filter(e => e.date !== entry.date)].slice(0, 30);
     setEntries(updated);
     AsyncStorage.setItem('ss_sleep', JSON.stringify(updated)).catch(() => {});
+    if (userId) {
+      api.saveSleep(userId, entry).catch(() => {});
+    }
     setNotes('');
   };
 

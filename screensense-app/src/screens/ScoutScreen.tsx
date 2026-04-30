@@ -1,7 +1,8 @@
 /**
  * Scout — ScreenSense AI Wellbeing Companion
  * ============================================
- * Context-aware conversational AI powered by Claude.
+ * Context-aware conversational AI powered by the ScreenSense
+ * bespoke ML engine (VADER sentiment + BiLSTM distress analysis).
  * Knows your stress score, mood, care level, and history
  * before you say a word. Surfaces therapy tools and places
  * as inline action cards mid-conversation.
@@ -20,10 +21,9 @@ import {
   ActivityIndicator, SafeAreaView,
 } from 'react-native';
 import { C, Space, Radius, Font, Shadow } from '../utils/theme';
-import { api } from '../services/api';
+import { api, BASE_URL } from '../services/api';
 
-const BASE = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000/api';
-const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
+// Scout uses ScreenSense's three models: Random Forest, BiLSTM, and VADER.
 
 interface Message {
   id: string;
@@ -51,56 +51,6 @@ interface ScoutProps {
   careLevel?: number;
   lastResult?: any;
   onNavigate?: (screen: string) => void;
-}
-
-// Build the system prompt from user context
-function buildSystemPrompt(props: ScoutProps): string {
-  const { userName, currentMood, currentStress, careLevel, lastResult } = props;
-  const stressPct = currentStress ? Math.round(currentStress * 100) : null;
-  const careLevelLabel = ['Stable', 'Monitor', 'Intervention', 'Crisis'][( careLevel || 1) - 1];
-
-  return `You are Scout, a warm and clinically-grounded AI wellbeing companion built into the ScreenSense app. You support users with stress, anxiety, and low mood using evidence-based techniques from CBT, mindfulness, and behavioural activation.
-
-CURRENT USER CONTEXT (from their latest check-in):
-- Name: ${userName}
-- Mood: ${currentMood || 'unknown'}
-- ML stress score: ${stressPct !== null ? `${stressPct}/100` : 'not yet assessed'}
-- Care level: ${careLevel || 1} — ${careLevelLabel}
-- Neighbourhood: ${lastResult?.neighbourhood || 'London'}
-- Weather: ${lastResult?.weather_condition || 'unknown'}
-${lastResult?.risk_factors_detected?.length > 0 ? `- Risk factors detected: ${lastResult.risk_factors_detected.join(', ')}` : ''}
-${lastResult?.protective_factors?.length > 0 ? `- Protective factors: ${lastResult.protective_factors.join(', ')}` : ''}
-
-PERSONALITY:
-- Warm, direct, non-judgmental
-- Evidence-based — cite techniques (CBT, MBSR, etc.) naturally in conversation
-- Acknowledge feelings before offering tools
-- Short messages — max 3 sentences per turn unless explaining a technique
-- Never use clinical jargon without explaining it
-
-CLINICAL BOUNDARIES (non-negotiable):
-- Never diagnose any condition
-- Never claim to replace professional care
-- At care level 3 or 4: always mention professional support within 2 turns
-- If crisis language appears: immediately switch to grounding + crisis resources
-- End every session with: "Remember, I'm a support tool — not a substitute for professional care"
-
-TOOLS YOU CAN SUGGEST:
-When relevant, suggest these ScreenSense tools by name so the app can surface them:
-- [BREATHING] 4-7-8 breathing exercise
-- [CBT] Thought challenger
-- [GRATITUDE] Gratitude log
-- [MINDFULNESS] Mindfulness timer
-- [PLACE] Recommend nearby place (park, library, café)
-- [CRISIS] Crisis support resources
-
-Format tool suggestions like: "I'd suggest trying [BREATHING] right now — it only takes 2 minutes."
-
-RESPONSE FORMAT:
-- Plain conversational text
-- When suggesting a tool, use the [TAG] format above
-- Keep responses concise and human
-- Don't start with "I" — vary your sentence openings`;
 }
 
 // Parse action cards from Scout's message
@@ -203,7 +153,7 @@ export default function ScoutScreen({ userId, userName, currentMood, currentStre
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
-      // Build conversation history for Claude
+      // Build conversation history for the bespoke Scout engine
       const history = messages
         .filter(m => !m.isTyping && m.id !== 'typing')
         .map(m => ({
@@ -213,20 +163,22 @@ export default function ScoutScreen({ userId, userName, currentMood, currentStre
 
       history.push({ role: 'user', content: userText });
 
-      // Call Claude API
-      const response = await fetch(ANTHROPIC_API, {
+      // Call Scout backend — powered by Random Forest, BiLSTM, and VADER
+      const response = await fetch(`${BASE_URL}/scout/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 400,
-          system: buildSystemPrompt({ userId, userName, currentMood, currentStress, careLevel, lastResult }),
+          user_id:  userId,
+          message:  userText,
           messages: history,
         }),
       });
 
       const data = await response.json();
-      const scoutText = data.content?.[0]?.text || "I'm here with you. Tell me more.";
+      // Append optional CBT follow-up prompt to the main response
+      const mainText = data.content?.[0]?.text || "I'm here with you. Tell me more.";
+      const cbtText  = data.cbt_prompt ? `\n\n${data.cbt_prompt}` : '';
+      const scoutText = mainText + cbtText;
       const actionCards = parseActionCards(scoutText, lastResult);
       const displayText = cleanText(scoutText);
 

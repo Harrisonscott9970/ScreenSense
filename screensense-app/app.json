@@ -48,6 +48,12 @@
     "plugins": [
       "expo-location",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "ScreenSense uses your photo library so you can set a profile picture."
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
@@ -57,7 +63,7 @@
       ]
     ],
     "extra": {
-      "apiUrl": "https://screensense-api.onrender.com/api"
+      "apiUrl": null
     }
   }
 }

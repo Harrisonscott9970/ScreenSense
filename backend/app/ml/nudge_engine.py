@@ -6,7 +6,7 @@ recommendations based on predicted stress + mood signals.
 
 This is a rule-based expert system — deliberately transparent and
 auditable, which is an academic strength (cite: Fogg, 2009).
-Every decision path can be traced, unlike a black-box LLM.
+Every decision path can be traced — no external AI services used.
 
 Rules are structured as: Trigger → Behaviour → Motivation cue
 """

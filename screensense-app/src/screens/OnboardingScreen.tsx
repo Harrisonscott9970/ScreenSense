@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, Animated,
   Dimensions, Easing, ScrollView,
 } from 'react-native';
+import { AnimatedPress } from '../components/AnimatedPress';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
@@ -152,16 +153,16 @@ export default function OnboardingScreen({ onComplete }: OnboardingProps) {
           </Text>
           <View style={s.archetypeGrid}>
             {ARCHETYPES.map(a => (
-              <TouchableOpacity
+              <AnimatedPress
                 key={a.id}
+                scale={0.95}
                 style={[s.archetypeTile, archetype === a.id && s.archetypeTileOn]}
                 onPress={() => setArchetype(a.id)}
-                activeOpacity={0.8}
               >
                 <Text style={s.archetypeIcon}>{a.icon}</Text>
                 <Text style={[s.archetypeLabel, archetype === a.id && { color: VL }]}>{a.label}</Text>
                 <Text style={s.archetypeDesc}>{a.desc}</Text>
-              </TouchableOpacity>
+              </AnimatedPress>
             ))}
           </View>
         </Animated.View>
@@ -180,16 +181,16 @@ export default function OnboardingScreen({ onComplete }: OnboardingProps) {
 
       {/* CTA */}
       <View style={s.ctaWrap}>
-        <TouchableOpacity
+        <AnimatedPress
           style={[s.cta, { backgroundColor: accentColor }, isArchetypeStep && !archetype && s.ctaDisabled]}
           onPress={next}
-          activeOpacity={0.88}
+          scale={0.96}
           disabled={isArchetypeStep && !archetype}
         >
           <Text style={s.ctaTxt}>
             {isArchetypeStep ? 'Get started  →' : slide < SLIDES.length - 1 ? 'Next  →' : 'Next  →'}
           </Text>
-        </TouchableOpacity>
+        </AnimatedPress>
         {slide === 0 && (
           <Text style={s.legalTxt}>Your data is stored locally · No ads · GDPR compliant</Text>
         )}

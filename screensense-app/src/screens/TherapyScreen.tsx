@@ -3,6 +3,7 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   TextInput, Animated, Easing,
 } from 'react-native';
+import { AnimatedPress } from '../components/AnimatedPress';
 
 function FadeIn({ delay = 0, children, style }: { delay?: number; children: React.ReactNode; style?: any }) {
   const anim = useRef(new Animated.Value(0)).current;
@@ -46,7 +47,7 @@ const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
 
 type Tool = 'breathing' | 'cbt' | 'gratitude' | 'mindfulness' | null;
 
-export default function TherapyScreen() {
+export default function TherapyScreen({ userId }: { userId?: string } = {}) {
   const [activeTool, setActiveTool] = useState<Tool>(null);
 
   if (activeTool === 'breathing') return <BreathingExercise onBack={() => setActiveTool(null)} />;
@@ -68,26 +69,20 @@ export default function TherapyScreen() {
         <Text style={s.sectionLabel}>Choose a tool</Text>
       </FadeIn>
 
-      <FadeIn delay={160}>
-        <View style={s.toolGrid}>
+      {/* Staggered animated tool list — each card slides up with a delay */}
+      {[
+        { icon: '🫁', title: 'Guided breathing',    sub: '4-7-8 technique · reduces anxiety',            color: C, tool: 'breathing'   as Tool, badge: 'CBT-backed' },
+        { icon: '🧠', title: 'Thought challenger',  sub: 'Identify & reframe cognitive distortions',     color: V, tool: 'cbt'          as Tool, badge: 'CBT technique' },
+        { icon: '🙏', title: 'Gratitude log',       sub: '3 things daily · builds resilience',           color: G, tool: 'gratitude'    as Tool, badge: 'Positive psychology' },
+        { icon: '🧘', title: 'Mindfulness timer',   sub: 'Body scan · present-moment awareness',         color: A, tool: 'mindfulness'  as Tool, badge: 'Mindfulness-based' },
+      ].map((t, i) => (
+        <FadeIn key={t.tool} delay={160 + i * 70}>
           <ToolCard
-            icon="🫁" title="Guided breathing" sub="4-7-8 technique · reduces anxiety"
-            color={C} onPress={() => setActiveTool('breathing')} badge="CBT-backed"
+            icon={t.icon} title={t.title} sub={t.sub}
+            color={t.color} onPress={() => setActiveTool(t.tool)} badge={t.badge}
           />
-          <ToolCard
-            icon="🧠" title="Thought challenger" sub="Identify & reframe cognitive distortions"
-            color={V} onPress={() => setActiveTool('cbt')} badge="CBT technique"
-          />
-          <ToolCard
-            icon="🙏" title="Gratitude log" sub="3 things daily · builds resilience"
-            color={G} onPress={() => setActiveTool('gratitude')} badge="Positive psychology"
-          />
-          <ToolCard
-            icon="🧘" title="Mindfulness timer" sub="Body scan · present-moment awareness"
-            color={A} onPress={() => setActiveTool('mindfulness')} badge="Mindfulness-based"
-          />
-        </View>
-      </FadeIn>
+        </FadeIn>
+      ))}
 
       <FadeIn delay={280}>
         <View style={s.infoCard}>
@@ -461,18 +456,22 @@ function BackBtn({ onBack }: { onBack: () => void }) {
   );
 }
 
+// Horizontal card: icon left, text right, chevron far right
 function ToolCard({ icon, title, sub, color, onPress, badge }: any) {
   return (
-    <TouchableOpacity style={[s.toolCard, { borderColor: color + '30' }]} onPress={onPress} activeOpacity={0.8}>
-      <View style={[s.toolCardIcon, { backgroundColor: color + '20' }]}>
-        <Text style={{ fontSize: 28 }}>{icon}</Text>
+    <AnimatedPress style={[s.toolCard, { borderColor: color + '30' }]} onPress={onPress} scale={0.97}>
+      <View style={[s.toolCardIcon, { backgroundColor: color + '22' }]}>
+        <Text style={{ fontSize: 26 }}>{icon}</Text>
       </View>
-      <Text style={s.toolCardTitle}>{title}</Text>
-      <Text style={s.toolCardSub}>{sub}</Text>
-      <View style={[s.toolCardBadge, { backgroundColor: color + '18', borderColor: color + '35' }]}>
-        <Text style={[s.toolCardBadgeTxt, { color }]}>{badge}</Text>
+      <View style={s.toolCardBody}>
+        <Text style={s.toolCardTitle}>{title}</Text>
+        <Text style={s.toolCardSub}>{sub}</Text>
+        <View style={[s.toolCardBadge, { backgroundColor: color + '18', borderColor: color + '35' }]}>
+          <Text style={[s.toolCardBadgeTxt, { color }]}>{badge}</Text>
+        </View>
       </View>
-    </TouchableOpacity>
+      <Text style={[s.toolCardChevron, { color: color + 'aa' }]}>›</Text>
+    </AnimatedPress>
   );
 }
 
@@ -486,11 +485,12 @@ const s = StyleSheet.create({
   heroH: { fontSize: 36, fontWeight: '800', color: TXT, letterSpacing: -1, marginBottom: 8, lineHeight: 40 },
   heroSub: { fontSize: 13, color: MUT },
 
-  toolGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 20 },
-  toolCard: { width: 'calc(50% - 6px)' as any, backgroundColor: CARD, borderRadius: 16, padding: 16, borderWidth: 1 },
-  toolCardIcon: { width: 52, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
-  toolCardTitle: { fontSize: 14, fontWeight: '700', color: TXT, marginBottom: 4 },
-  toolCardSub: { fontSize: 11, color: MUT, lineHeight: 17, marginBottom: 8 },
+  toolCard: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: CARD, borderRadius: 16, padding: 16, borderWidth: 1, marginBottom: 10 },
+  toolCardIcon: { width: 54, height: 54, borderRadius: 15, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  toolCardBody: { flex: 1 },
+  toolCardTitle: { fontSize: 15, fontWeight: '700', color: TXT, marginBottom: 3 },
+  toolCardSub: { fontSize: 12, color: MUT, lineHeight: 17, marginBottom: 6 },
+  toolCardChevron: { fontSize: 22, fontWeight: '300', flexShrink: 0 },
   toolCardBadge: { alignSelf: 'flex-start' as any, borderRadius: 99, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1 },
   toolCardBadgeTxt: { fontSize: 9, fontWeight: '600' },
 

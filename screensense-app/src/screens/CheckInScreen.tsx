@@ -1,32 +1,34 @@
 /**
- * CheckInScreen — 7-step daily wellbeing wizard
- * ===============================================
- * Step 0: Welcome + live screen time + GPS status
- * Step 1: Mood selection (Russell circumplex model)
- * Step 2: Intensity + Energy sliders
- * Step 3: Sleep last night (user-entered, not hardcoded)
- * Step 4: Body scan (MBSR, Kabat-Zinn 1990)
- * Step 5: Thought patterns (CBT, Beck 1979)
- * Step 6: Journal (VADER sentiment + BiLSTM distress)
- *
- * Real device data:
- *  - GPS: useDeviceData hook (expo-location)
- *  - Screen time: passed from App.tsx (AppState tracking)
- *  - Sleep: user-entered in step 3
+ * CheckInScreen — 7-step daily wellbeing check-in
+ * =================================================
+ * Collects mood, sleep, energy, thoughts and journal.
+ * All input feeds into the three ScreenSense AI models:
+ *   · Random Forest  — stress prediction from device signals
+ *   · BiLSTM         — distress detection from text + thoughts
+ *   · VADER          — sentiment from journal + thought chips
+ * Location recommendations adapt to stress · time · weather.
  */
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   Animated, ActivityIndicator, ScrollView, Easing, Pressable, Keyboard,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, Dimensions,
 } from 'react-native';
 import { C, Space, Radius, Font, Shadow } from '../utils/theme';
 import { api } from '../services/api';
+import { sendHighStressAlert } from '../utils/notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 let Haptics: any = null;
 try { Haptics = require('expo-haptics'); } catch {}
 import { useDeviceData } from '../hooks/useDeviceData';
 import ResultScreen from './ResultScreen';
+
+const SCREEN_W    = Dimensions.get('window').width;
+const CHECKIN_PAD = 24;   // Space['6']
+const MOOD_GAP    = 12;   // Space['3']
+const NUM_GAP     = 8;    // Space['2']
+const MOOD_TILE_W = Math.floor((SCREEN_W - CHECKIN_PAD * 2 - MOOD_GAP * 3) / 4);
+const NUM_BTN_W   = Math.floor((SCREEN_W - CHECKIN_PAD * 2 - NUM_GAP  * 4) / 5);
 
 // ── Mood data (Russell circumplex model) ──────────────────────
 const MOODS = [
@@ -82,6 +84,7 @@ export default function CheckInScreen({
   const [energy, setEnergy]         = useState(5);
   const [intensity, setIntensity]   = useState(5);
   const [sleepHours, setSleepHours] = useState(7);
+  const [heartRate, setHeartRate]   = useState('');
   const [body, setBody]             = useState<string[]>([]);
   const [thoughts, setThoughts]     = useState<string[]>([]);
   const [journal, setJournal]       = useState('');
@@ -95,7 +98,7 @@ export default function CheckInScreen({
   // Animations
   const progress   = useRef(new Animated.Value(0)).current;
   const opacity    = useRef(new Animated.Value(1)).current;
-  const translateY = useRef(new Animated.Value(0)).current;
+  const translateX = useRef(new Animated.Value(0)).current;
   const moodScales = useRef(MOODS.map(() => new Animated.Value(1))).current;
   const ctaScale   = useRef(new Animated.Value(1)).current;
 
@@ -107,20 +110,22 @@ export default function CheckInScreen({
   }, [step]);
 
   const transition = (next: number) => {
+    const forward = next > step;
+    const SLIDE   = SCREEN_W * 0.28;
     // CTA pulse on advance
     Animated.sequence([
       Animated.spring(ctaScale, { toValue: 0.95, useNativeDriver: true, tension: 400, friction: 10 }),
       Animated.spring(ctaScale, { toValue: 1,    useNativeDriver: true, tension: 400, friction: 10 }),
     ]).start();
     Animated.parallel([
-      Animated.timing(opacity,    { toValue: 0,   duration: 150, useNativeDriver: true }),
-      Animated.timing(translateY, { toValue: -12, duration: 150, useNativeDriver: true }),
+      Animated.timing(opacity,     { toValue: 0, duration: 140, useNativeDriver: true }),
+      Animated.timing(translateX,  { toValue: forward ? -SLIDE : SLIDE, duration: 140, easing: Easing.in(Easing.quad), useNativeDriver: true }),
     ]).start(() => {
       setStep(next);
-      translateY.setValue(16);
+      translateX.setValue(forward ? SLIDE : -SLIDE);
       Animated.parallel([
         Animated.timing(opacity,    { toValue: 1, duration: 220, useNativeDriver: true }),
-        Animated.timing(translateY, { toValue: 0, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.timing(translateX, { toValue: 0, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
       ]).start();
     });
   };
@@ -141,10 +146,13 @@ export default function CheckInScreen({
     setLoading(true);
     setError('');
     try {
-      // Use real tracked screen time; small default if session just started
       const screenTime = screenTimeHours > 0 ? screenTimeHours : 0.1;
-      const scrollMins = Math.round(screenTime * 60 * 0.25); // ~25% of screen time
+      const scrollMins = Math.round(screenTime * 60 * 0.25);
 
+      // Send all data to the backend — three AIs run in sequence:
+      // 1. Random Forest predicts stress from screen time, sleep, HR, energy
+      // 2. BiLSTM classifies distress from journal text + selected thoughts
+      // 3. VADER scores sentiment from the combined text
       const res = await api.checkin({
         user_id:             userId,
         mood_label:          mood.toLowerCase(),
@@ -152,6 +160,7 @@ export default function CheckInScreen({
         screen_time_hours:   screenTime,
         scroll_session_mins: scrollMins,
         sleep_hours:         sleepHours,
+        heart_rate_resting:  heartRate ? parseInt(heartRate, 10) : undefined,
         energy_level:        energy,
         latitude:            latitude ?? undefined,
         longitude:           longitude ?? undefined,
@@ -159,6 +168,14 @@ export default function CheckInScreen({
       });
       setResult(res);
       onComplete?.(mood, res.predicted_stress_score, res);
+      // Fire high-stress push notification when score is critical OR care level escalates.
+      // care_level >= 3 means Intervention/Crisis — always notify regardless of raw score.
+      const shouldAlert =
+        res.predicted_stress_score > 0.75 ||
+        (res.care_level ?? 1) >= 3;
+      if (shouldAlert) {
+        sendHighStressAlert(Math.round(res.predicted_stress_score * 100)).catch(() => {});
+      }
       // Auto-retrain every 10th check-in (continual learning — Widmer & Kubat 1996)
       try {
         const key = `ss_checkin_count_${userId}`;
@@ -217,7 +234,7 @@ export default function CheckInScreen({
       </View>
 
       {/* Step content */}
-      <Animated.View style={[s.stepArea, { opacity, transform: [{ translateY }] }]}>
+      <Animated.View style={[s.stepArea, { opacity, transform: [{ translateX }] }]}>
 
         {/* ── STEP 0: Welcome ── */}
         {step === 0 && (
@@ -402,6 +419,37 @@ export default function CheckInScreen({
                   : '⚠ Significant sleep deficit — your stress score will reflect this.'}
               </Text>
             </View>
+
+            {/* ── Resting Heart Rate (optional biometric) ── */}
+            <Text style={[Font.label, { marginTop: Space['6'], marginBottom: Space['2'] }]}>
+              Resting heart rate <Text style={{ color: C.textGhost }}>(optional)</Text>
+            </Text>
+            <View style={s.hrRow}>
+              <TextInput
+                style={s.hrInput}
+                value={heartRate}
+                onChangeText={v => setHeartRate(v.replace(/[^0-9]/g, ''))}
+                keyboardType="number-pad"
+                placeholder="e.g. 62"
+                placeholderTextColor={C.textGhost}
+                maxLength={3}
+                returnKeyType="done"
+                onSubmitEditing={() => Keyboard.dismiss()}
+              />
+              <Text style={s.hrUnit}>bpm</Text>
+            </View>
+            <View style={s.biometricHint}>
+              <Text style={s.biometricHintTitle}>💡 How to find your resting HR</Text>
+              <Text style={s.biometricHintBody}>
+                <Text style={{ fontWeight: '600' }}>Apple Health</Text>
+                {' '}→ Browse → Heart → Resting Heart Rate (measured automatically overnight){'\n'}
+                <Text style={{ fontWeight: '600' }}>Google Fit</Text>
+                {' '}→ Journal → Vitals → Resting heart rate
+              </Text>
+              <Text style={s.biometricHintBody}>
+                A lower resting HR generally reflects better cardiovascular fitness and lower baseline stress (Thayer et al., 2012).
+              </Text>
+            </View>
           </View>
         )}
 
@@ -475,11 +523,18 @@ export default function CheckInScreen({
               showsVerticalScrollIndicator={false}
             >
               <View style={s.step}>
-                <Text style={[Font.label, s.stepLabel]}>VADER sentiment + BiLSTM distress analysis</Text>
+                <Text style={[Font.label, s.stepLabel]}>VADER sentiment + BiLSTM distress + Random Forest</Text>
                 <Text style={[Font.h1, s.stepTitle]}>Anything on{'\n'}your mind?</Text>
                 <Text style={[Font.body, s.stepBody]}>
-                  Optional. Processed by our local NLP pipeline — never shared externally. GDPR compliant.
+                  Optional. Your thoughts and words are understood by all three AI models — processed locally, never shared. GDPR compliant.
                 </Text>
+                {thoughts.filter(t => t !== 'None right now').length > 0 && (
+                  <View style={[s.insightPill, { marginBottom: Space['4'] }]}>
+                    <Text style={s.insightTxt}>
+                      🧠 Already analysing: {thoughts.filter(t => t !== 'None right now').join(', ')}
+                    </Text>
+                  </View>
+                )}
                 <TextInput
                   style={s.journal}
                   placeholder={`What's been happening today, ${userName.split(' ')[0]}?`}
@@ -536,7 +591,7 @@ export default function CheckInScreen({
 }
 
 const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: 'transparent' },
+  root: { flex: 1, backgroundColor: 'transparent', overflow: 'hidden' },
   progressTrack: { height: 2, backgroundColor: C.line },
   progressFill:  { height: 2, backgroundColor: C.violet },
   navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Space['6'], paddingVertical: Space['4'] },
@@ -565,7 +620,7 @@ const s = StyleSheet.create({
   screenTimeTxt: { fontSize: 13, color: C.textDim },
 
   moodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['3'], marginBottom: Space['4'] },
-  moodTileWrap: { width: 'calc(25% - 9px)' as any, minWidth: 80 },
+  moodTileWrap: { width: MOOD_TILE_W, minWidth: 72 },
   moodTile: { backgroundColor: C.card, borderRadius: Radius.md, paddingVertical: Space['5'], paddingHorizontal: Space['2'], alignItems: 'center', position: 'relative', overflow: 'hidden', minHeight: 88 },
   moodSelectedIndicator: { position: 'absolute', top: 0, left: 0, right: 0, height: 3, borderRadius: 1 },
   moodEmoji: { fontSize: 36, marginBottom: Space['2'] },
@@ -578,7 +633,7 @@ const s = StyleSheet.create({
 
   // Number grid for intensity/energy — large tappable buttons
   numGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Space['2'], marginBottom: Space['4'] },
-  numBtn: { width: 56, height: 56, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: C.elevated, borderWidth: 1.5, borderColor: 'transparent' },
+  numBtn: { width: NUM_BTN_W, height: NUM_BTN_W, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: C.elevated, borderWidth: 1.5, borderColor: 'transparent' },
   numBtnTxt: { fontSize: 20, fontWeight: '700', color: C.textSub },
   numHint: { fontSize: 8, color: C.textGhost, marginTop: 1 },
 
@@ -597,6 +652,13 @@ const s = StyleSheet.create({
 
   insightPill: { backgroundColor: C.violetDim, borderRadius: Radius.md, padding: Space['4'], borderWidth: 1, borderColor: C.violet + '30' },
   insightTxt: { fontSize: 13, color: C.violetSoft, lineHeight: 20 },
+
+  hrRow: { flexDirection: 'row', alignItems: 'center', gap: Space['3'], marginBottom: Space['4'] },
+  hrInput: { backgroundColor: C.card, borderRadius: Radius.md, paddingHorizontal: Space['4'], paddingVertical: Space['3'], color: C.text, fontSize: 24, fontWeight: '700', width: 100, textAlign: 'center' as any, borderWidth: 1.5, borderColor: C.line },
+  hrUnit: { fontSize: 16, color: C.textDim, fontWeight: '500' },
+  biometricHint: { backgroundColor: C.elevated, borderRadius: Radius.md, padding: Space['4'], borderLeftWidth: 3, borderLeftColor: C.teal, gap: Space['2'] },
+  biometricHintTitle: { fontSize: 13, fontWeight: '700', color: C.teal, marginBottom: Space['1'] },
+  biometricHintBody: { fontSize: 12, color: C.textSub, lineHeight: 18 },
 
   journal: { backgroundColor: C.card, borderRadius: Radius.lg, padding: Space['5'], color: C.text, fontSize: 16, minHeight: 140, textAlignVertical: 'top', lineHeight: 24 },
   errorTxt: { fontSize: 13, color: C.danger, textAlign: 'center', marginTop: Space['3'] },

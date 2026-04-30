@@ -166,6 +166,38 @@ class RecommendationFeedback(Base):
     created_at     = Column(DateTime, default=datetime.utcnow)
 
 
+class ProgrammeProgress(Base):
+    """
+    Stores per-user progress across structured therapy programmes.
+    Data is a JSON blob keyed by programme_id containing completedDays
+    and journal entries — mirrors the AsyncStorage schema for offline-first sync.
+    """
+    __tablename__ = "programme_progress"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id    = Column(String(64), unique=True, index=True, nullable=False)
+    data       = Column(JSON, default=dict)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SleepEntry(Base):
+    """
+    Individual nightly sleep records synced from SleepScreen.
+    One row per user per date — upsert on (user_id, date) ensures deduplication.
+    """
+    __tablename__ = "sleep_entries"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_id   = Column(String(64), index=True, nullable=False)
+    date      = Column(String(10), nullable=False)   # YYYY-MM-DD
+    bedtime   = Column(String(5), nullable=True)     # HH:MM
+    wake_time = Column(String(5), nullable=True)     # HH:MM
+    duration  = Column(String(10), nullable=True)    # e.g. "7h 30m"
+    quality   = Column(Integer, nullable=True)       # 1-10
+    notes     = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def _migrate_schema():
     """
     Robust schema migration for SQLite.
@@ -195,7 +227,7 @@ def _migrate_schema():
 
     # All tables are safe to rebuild in development — mood_entries data is
     # reseedable via the Insights tab "Generate test data" button.
-    REBUILDABLE = {"mood_entries", "user_profiles", "recommendation_feedback", "clinical_results"}
+    REBUILDABLE = {"mood_entries", "user_profiles", "recommendation_feedback", "clinical_results", "programme_progress", "sleep_entries"}
 
     # Extra columns to guarantee via ALTER TABLE ADD COLUMN.
     # Format: (column_name, SQL type string, DEFAULT clause or '')
@@ -247,34 +279,15 @@ def _migrate_schema():
             except Exception:
                 continue  # table absent — create_all will handle it
 
-            # ── Step 2: detect broken primary key ─────────────────────────
-            # PRAGMA table_info distinguishes column-level vs table-level PKs:
-            #
-            #   column-level:  id INTEGER PRIMARY KEY
-            #     → rowid alias → auto-increments ✓
-            #     → PRAGMA: pk=1, notnull=0  (SQLite implicitly allows NULL on rowid)
-            #
-            #   table-level:  id INTEGER NOT NULL, PRIMARY KEY(id)
-            #     → does NOT auto-increment ✗
-            #     → PRAGMA: pk=1, notnull=1  (explicitly NOT NULL)
-            #
-            # So: pk=1 AND notnull=1 means the id will NOT be auto-generated.
-            needs_rebuild = False
-            if REBUILD_SENTINEL not in existing:
-                needs_rebuild = True
-            else:
-                id_row = next((r for r in rows if r[1] == "id"), None)
-                if id_row is not None:
-                    id_pk      = int(id_row[5])   # pk flag
-                    id_notnull = int(id_row[3])   # notnull flag
-                    # column-level INTEGER PRIMARY KEY → notnull=0, pk=1
-                    # table-level  PRIMARY KEY(id)    → notnull=1, pk=1  ← broken
-                    if id_pk == 1 and id_notnull == 1:
-                        needs_rebuild = True
-                        _logger.warning(
-                            f"Table '{table}' has table-level PRIMARY KEY "
-                            f"(notnull=1, pk=1) — id will NOT auto-increment. Rebuilding."
-                        )
+            # ── Step 2: detect missing primary key column ──────────────────
+            # Only rebuild when the 'id' column is completely absent.
+            # SQLAlchemy generates `id INTEGER NOT NULL, PRIMARY KEY (id)` for
+            # SQLite, which PRAGMA reports as notnull=1, pk=1. Despite the
+            # table-level PK syntax, SQLite still treats a single-column INTEGER
+            # PRIMARY KEY as a rowid alias and auto-increments it correctly
+            # (SQLite docs §2.1). The old notnull=1 check was a false positive
+            # that caused tables to be dropped and rebuilt on every startup.
+            needs_rebuild = REBUILD_SENTINEL not in existing
 
             if needs_rebuild:
                 if table in REBUILDABLE:

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # API Keys
     foursquare_api_key: str = ""
     google_maps_key: str = ""
+    # Scout uses the three ScreenSense models (Random Forest, BiLSTM, VADER) — no external AI
 
     # External API URLs
     open_meteo_url: str = "https://api.open-meteo.com/v1/forecast"

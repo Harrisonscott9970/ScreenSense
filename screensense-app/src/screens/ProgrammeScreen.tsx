@@ -4,6 +4,7 @@ import {
   Animated, TextInput,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { api } from '../services/api';
 
 const V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7', A = '#FFB74D',
       G = '#4CAF82', R = '#F43F5E', TXT = '#EEF0FF',
@@ -91,21 +92,38 @@ const TYPE_COLORS: Record<string, string> = {
   gratitude: '#E91E63', tracking: '#607D8B',
 };
 
-export default function ProgrammeScreen() {
+interface ProgrammeProps {
+  userId?: string;
+}
+
+export default function ProgrammeScreen({ userId }: ProgrammeProps) {
   const [active, setActive] = useState<string | null>(null);
   const [progData, setProgData] = useState<Record<string, any>>({});
   const [expandedDay, setExpandedDay] = useState<number | null>(null);
   const [journalText, setJournalText] = useState('');
 
   useEffect(() => {
+    // Load from AsyncStorage first (offline-first), then merge server data
     AsyncStorage.getItem('ss_programmes').then(v => {
       try { if (v) setProgData(JSON.parse(v)); } catch {}
     }).catch(() => {});
-  }, []);
+
+    if (userId) {
+      api.getProgrammes(userId).then(res => {
+        if (res?.data && Object.keys(res.data).length > 0) {
+          setProgData(res.data);
+          AsyncStorage.setItem('ss_programmes', JSON.stringify(res.data)).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+  }, [userId]);
 
   const save = (data: Record<string, any>) => {
     setProgData(data);
     AsyncStorage.setItem('ss_programmes', JSON.stringify(data)).catch(() => {});
+    if (userId) {
+      api.saveProgrammes(userId, data).catch(() => {});
+    }
   };
 
   const programme = PROGRAMMES.find(p => p.id === active);

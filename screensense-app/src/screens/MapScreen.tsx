@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity,
+  View, Text, StyleSheet, TouchableOpacity, Image,
   ScrollView, Animated, Linking, Dimensions, ActivityIndicator,
 } from 'react-native';
 import { BASE_URL } from '../services/api';
@@ -93,6 +93,7 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
   const [livePlaces, setLivePlaces]       = useState<any[]>([]);
   const [placesLoading, setPlacesLoading] = useState(false);
   const [placesError, setPlacesError]     = useState<string | null>(null);
+  const [weatherCtx, setWeatherCtx]       = useState<{ condition?: string; temp_c?: number; time_of_day?: string } | null>(null);
   const slideAnim = useRef(new Animated.Value(300)).current;
   const fadeAnim  = useRef(new Animated.Value(0)).current;
 
@@ -129,15 +130,20 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
     setPlacesLoading(true);
     setPlacesError(null);
     try {
+      // Derive stress band for the nudge engine (low / moderate / high)
       const stressCat = currentStress && currentStress > 0.66 ? 'high'
                       : currentStress && currentStress > 0.33 ? 'moderate' : 'low';
 
-      // Backend handles Google Maps → Overpass → defaults chain
+      // Backend fetches live weather + time of day and adjusts place types accordingly
       const url = `${BASE_URL}/places?lat=${lat}&lon=${lon}&mood=${encodeURIComponent(currentMood || 'calm')}&stress_category=${stressCat}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`places ${res.status}`);
       const data = await res.json();
 
+      // Store weather + time context from backend
+      if (data.weather || data.time_of_day) {
+        setWeatherCtx({ ...data.weather, time_of_day: data.time_of_day });
+      }
       const raw: any[] = data.places || [];
       if (raw.length > 0) {
         // Backend already has reason text; enrich icon if missing
@@ -316,16 +322,21 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
           </>
         ) : (
           <>
-            {/* AI context banner — shows mood/stress state that drove recommendations */}
-            {currentMood && places.length > 0 && (
+            {/* AI context banner — shows mood/stress/weather/time that drove recommendations */}
+            {places.length > 0 && (
               <View style={s.aiContextBanner}>
                 <Text style={s.aiContextTxt}>
-                  AI matched to your <Text style={{ color: MOOD_COL[currentMood] || V, fontWeight: '700' }}>{currentMood}</Text> mood
+                  {currentMood
+                    ? <>AI matched to your <Text style={{ color: MOOD_COL[currentMood] || V, fontWeight: '700' }}>{currentMood}</Text> mood</>
+                    : 'AI recommendations'}
                   {currentStress !== undefined && (
                     <Text style={{ color: stressColor }}> · stress {Math.round(currentStress * 100)}/100</Text>
                   )}
+                  {weatherCtx?.condition ? <Text style={{ color: C }}> · {weatherCtx.condition}</Text> : null}
+                  {weatherCtx?.temp_c != null ? <Text style={{ color: MUT }}> {Math.round(weatherCtx.temp_c)}°C</Text> : null}
+                  {weatherCtx?.time_of_day ? <Text style={{ color: MUT }}> · {weatherCtx.time_of_day}</Text> : null}
                 </Text>
-                <Text style={s.aiContextSub}>Places chosen using environmental psychology (Ulrich, Kaplan, Fredrickson)</Text>
+                <Text style={s.aiContextSub}>Adapts to mood · stress · time of day · live weather (Ulrich, Kaplan, Fredrickson)</Text>
               </View>
             )}
 
@@ -390,7 +401,7 @@ export default function MapScreen({ userId, currentMood, currentStress, lastResu
             {/* Stylised map */}
             <SectionHead text="Area overview" color={SUB} />
             <View style={s.mapWrap}>
-              <StylisedMap places={places} mood={currentMood} locationLabel={locationLabel} />
+              <StylisedMap places={places} mood={currentMood} locationLabel={locationLabel} latitude={latitude} longitude={longitude} />
             </View>
 
             {!placesLoading && latitude && (
@@ -537,52 +548,60 @@ const rc = StyleSheet.create({
   findBtnTxt: { color: '#fff', fontSize: 13, fontWeight: '700' },
 });
 
-function StylisedMap({ places, mood, locationLabel }: { places: any[]; mood?: string; locationLabel?: string }) {
-  const stressColor = mood === 'anxious' || mood === 'stressed' ? R : mood === 'calm' || mood === 'content' ? G : C;
-  return (
-    <View style={sm.wrap}>
-      <View style={sm.grid}>
-        {[20, 40, 60, 80].map(p => <View key={`h${p}`} style={[sm.gridH, { top: `${p}%` as any }]} />)}
-        {[25, 50, 75].map(p => <View key={`v${p}`} style={[sm.gridV, { left: `${p}%` as any }]} />)}
-      </View>
-      {/* You pin */}
-      <View style={sm.youWrap}>
-        <View style={sm.youDot} />
-        <View style={sm.youRing} />
-        <Text style={sm.youLbl}>You</Text>
-      </View>
-      {/* Place pins */}
-      {places.slice(0, 3).map((p: any, i: number) => {
-        const pos = [{ top: '30%', left: '62%' }, { top: '58%', left: '38%' }, { top: '42%', left: '72%' }][i];
-        return (
-          <View key={i} style={[sm.pin, { top: pos.top as any, left: pos.left as any }]}>
-            <View style={[sm.pinBubble, { backgroundColor: stressColor }]}>
-              <Text style={{ fontSize: 13 }}>{p.icon}</Text>
-            </View>
-            <Text style={sm.pinLbl}>{p.name?.split(' ')[0]}</Text>
+// Live map preview using Google Static Maps API — tappable to open full Google Maps
+function StylisedMap({ places, mood, locationLabel, latitude, longitude }: {
+  places: any[]; mood?: string; locationLabel?: string; latitude?: number | null; longitude?: number | null;
+}) {
+  const MAPS_KEY = 'AIzaSyC2cdFRD96kGw4lfPHofy_IRixVNyTETcQ';
+
+  // Build place markers string for up to 3 nearby places (not implemented client-side,
+  // since we don't have their coordinates — just show the user's location pin)
+  const openGoogleMaps = () => {
+    if (latitude && longitude) {
+      Linking.openURL(`https://www.google.com/maps/@${latitude},${longitude},15z`).catch(() => {});
+    }
+  };
+
+  if (latitude && longitude) {
+    // Real satellite + roadmap tile centred on the user's GPS position
+    const mapUrl = `https://maps.googleapis.com/maps/api/staticmap`
+      + `?center=${latitude},${longitude}`
+      + `&zoom=15&size=600x220&scale=2&maptype=roadmap`
+      + `&style=element:geometry%7Ccolor:0x0d1829`
+      + `&style=element:labels.text.fill%7Ccolor:0xeef0ff`
+      + `&style=element:labels.text.stroke%7Ccolor:0x0d1829`
+      + `&style=feature:road%7Celement:geometry%7Ccolor:0x1e2d4d`
+      + `&style=feature:water%7Ccolor:0x0a1020`
+      + `&markers=color:0x6C63FF%7Clabel:●%7C${latitude},${longitude}`
+      + `&key=${MAPS_KEY}`;
+
+    return (
+      <TouchableOpacity onPress={openGoogleMaps} activeOpacity={0.9}>
+        <View style={sm.wrap}>
+          <Image source={{ uri: mapUrl }} style={sm.mapImg} resizeMode="cover" />
+          <View style={sm.overlay}>
+            <Text style={sm.overlayTxt}>📍 {locationLabel || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`}</Text>
+            <Text style={sm.overlaySub}>Tap to open in Google Maps</Text>
           </View>
-        );
-      })}
-      <View style={sm.areaLbl}>
-        <Text style={sm.areaLblTxt}>{locationLabel || 'Your area'}</Text>
-      </View>
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
+  // Fallback when location not yet available
+  return (
+    <View style={[sm.wrap, { alignItems: 'center', justifyContent: 'center' }]}>
+      <Text style={{ fontSize: 28, marginBottom: 8 }}>📍</Text>
+      <Text style={{ color: MUT, fontSize: 13 }}>Enable location for live map preview</Text>
     </View>
   );
 }
 const sm = StyleSheet.create({
-  wrap: { height: 200, backgroundColor: '#0D1829', borderRadius: 14, overflow: 'hidden', position: 'relative', marginBottom: 10 },
-  grid: { position: 'absolute', inset: 0 },
-  gridH: { position: 'absolute', left: 0, right: 0, height: 1, backgroundColor: 'rgba(255,255,255,0.04)' },
-  gridV: { position: 'absolute', top: 0, bottom: 0, width: 1, backgroundColor: 'rgba(255,255,255,0.04)' },
-  youWrap: { position: 'absolute', top: '48%', left: '48%', alignItems: 'center', transform: [{ translateX: -7 }, { translateY: -7 }] },
-  youDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: V, borderWidth: 2, borderColor: '#fff' },
-  youRing: { position: 'absolute', width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: 'rgba(108,99,255,0.4)', top: -7, left: -7 },
-  youLbl: { fontSize: 8, color: '#fff', marginTop: 3, fontWeight: '700' },
-  pin: { position: 'absolute', alignItems: 'center' },
-  pinBubble: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)' },
-  pinLbl: { fontSize: 7, color: 'rgba(255,255,255,0.6)', marginTop: 2, fontWeight: '600' },
-  areaLbl: { position: 'absolute', bottom: 6, left: 8, backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 5, paddingHorizontal: 7, paddingVertical: 2 },
-  areaLblTxt: { fontSize: 8, color: 'rgba(255,255,255,0.4)' },
+  wrap: { height: 200, backgroundColor: '#0D1829', borderRadius: 14, overflow: 'hidden', marginBottom: 10 },
+  mapImg: { width: '100%' as any, height: '100%' as any },
+  overlay: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(13,24,41,0.70)', paddingHorizontal: 12, paddingVertical: 8 },
+  overlayTxt: { fontSize: 12, color: TXT, fontWeight: '600' },
+  overlaySub: { fontSize: 10, color: MUT, marginTop: 1 },
 });
 
 const s = StyleSheet.create({

@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Animated, Linking, Easing,
 } from 'react-native';
+import { AnimatedPress } from '../components/AnimatedPress';
 
 const R = '#F43F5E', V = '#6C63FF', VL = '#9B94FF', C = '#4FC3F7',
       G = '#4CAF82', A = '#FFB74D', TXT = '#EEF0FF',
@@ -32,7 +33,7 @@ interface CrisisScreenProps {
   isAutoEscalated?: boolean;
 }
 
-export default function CrisisScreen({ onBack, userName = 'Harrison', riskFactors = [], isAutoEscalated = false }: CrisisScreenProps) {
+export default function CrisisScreen({ onBack, userName = 'there', riskFactors = [], isAutoEscalated = false }: CrisisScreenProps) {
   const [tab, setTab] = useState<'grounding' | 'resources' | 'info'>('grounding');
   const [groundingStep, setGroundingStep] = useState(0);
   const [groundingDone, setGroundingDone] = useState(false);
@@ -176,15 +177,15 @@ export default function CrisisScreen({ onBack, userName = 'Harrison', riskFactor
                 </View>
                 <View style={s.resourceActions}>
                   {r.phone && (
-                    <TouchableOpacity style={[s.resourceBtn, { backgroundColor: r.color + '20', borderColor: r.color + '40' }]}
-                      onPress={() => Linking.openURL(`tel:${r.phone.replace(/\D/g, '')}`).catch(() => {})}>
+                    <AnimatedPress style={[s.resourceBtn, { backgroundColor: r.color + '20', borderColor: r.color + '40' }]}
+                      onPress={() => Linking.openURL(`tel:${r.phone.replace(/\D/g, '')}`).catch(() => {})} scale={0.95}>
                       <Text style={[s.resourceBtnTxt, { color: r.color }]}>📞 {r.phone}</Text>
-                    </TouchableOpacity>
+                    </AnimatedPress>
                   )}
-                  <TouchableOpacity style={[s.resourceBtn, { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: BOR }]}
-                    onPress={() => openURL(r.url)}>
+                  <AnimatedPress style={[s.resourceBtn, { backgroundColor: 'rgba(255,255,255,0.04)', borderColor: BOR }]}
+                    onPress={() => openURL(r.url)} scale={0.95}>
                     <Text style={s.resourceBtnTxt}>Visit website →</Text>
-                  </TouchableOpacity>
+                  </AnimatedPress>
                 </View>
               </View>
             ))}
@@ -192,9 +193,9 @@ export default function CrisisScreen({ onBack, userName = 'Harrison', riskFactor
             <View style={s.emergencyCard}>
               <Text style={s.emergencyTitle}>🚨 Immediate danger</Text>
               <Text style={s.emergencyTxt}>If you or someone else is in immediate danger, call 999 or go to your nearest A&E.</Text>
-              <TouchableOpacity style={s.emergencyBtn} onPress={() => Linking.openURL('tel:999').catch(() => {})}>
+              <AnimatedPress style={s.emergencyBtn} onPress={() => Linking.openURL('tel:999').catch(() => {})} scale={0.95}>
                 <Text style={s.emergencyBtnTxt}>Call 999</Text>
-              </TouchableOpacity>
+              </AnimatedPress>
             </View>
           </View>
         )}

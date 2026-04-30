@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { C, Space, Radius, Font, Shadow } from '../utils/theme';
 import { api } from '../services/api';
+import { AnimatedPress } from '../components/AnimatedPress';
 let Haptics: any = null;
 try { Haptics = require('expo-haptics'); } catch {}
 
@@ -214,9 +215,9 @@ export default function ResultScreen({ result, mood, userId, onReset, onNavigate
             </Text>
           )}
           {result.show_crisis_resources && (
-            <TouchableOpacity style={[s.crisisLink, { borderColor: careColor + '40' }]} onPress={() => onNavigate?.('crisis')}>
+            <AnimatedPress style={[s.crisisLink, { borderColor: careColor + '40' }]} onPress={() => onNavigate?.('crisis')} scale={0.97}>
               <Text style={[s.crisisLinkTxt, { color: careColor }]}>View support resources →</Text>
-            </TouchableOpacity>
+            </AnimatedPress>
           )}
         </View>
       </AnimBlock>
@@ -351,20 +352,20 @@ export default function ResultScreen({ result, mood, userId, onReset, onNavigate
               </View>
             ) : (
               <View style={s.feedbackBtns}>
-                <TouchableOpacity
+                <AnimatedPress
                   style={[s.fbBtn, s.fbBtnYes, feedbackSent === 'helpful' && s.fbBtnActive]}
                   onPress={() => handleFeedback(true)}
-                  activeOpacity={0.8}
+                  scale={0.94}
                 >
                   <Text style={s.fbBtnTxt}>👍  Helpful</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </AnimatedPress>
+                <AnimatedPress
                   style={[s.fbBtn, s.fbBtnNo, feedbackSent === 'not_helpful' && s.fbBtnActive]}
                   onPress={() => handleFeedback(false)}
-                  activeOpacity={0.8}
+                  scale={0.94}
                 >
                   <Text style={[s.fbBtnTxt, { color: C.textDim }]}>👎  Not for me</Text>
-                </TouchableOpacity>
+                </AnimatedPress>
               </View>
             )}
           </View>
@@ -429,13 +430,13 @@ export default function ResultScreen({ result, mood, userId, onReset, onNavigate
         )}
 
         {/* I need help button — always visible */}
-        <TouchableOpacity style={s.helpBtn} onPress={() => onNavigate?.('crisis')}>
+        <AnimatedPress style={s.helpBtn} onPress={() => onNavigate?.('crisis')} scale={0.97}>
           <Text style={s.helpBtnTxt}>🆘  I need support right now</Text>
-        </TouchableOpacity>
+        </AnimatedPress>
 
-        <TouchableOpacity style={s.resetBtn} onPress={onReset}>
+        <AnimatedPress style={s.resetBtn} onPress={onReset} scale={0.96}>
           <Text style={[Font.caption, { color: C.textDim, fontWeight: '600' }]}>Start new check-in</Text>
-        </TouchableOpacity>
+        </AnimatedPress>
       </AnimBlock>
 
       <View style={{ height: 80 }} />

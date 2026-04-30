@@ -43,28 +43,28 @@ USERS = [
     {
         "name": "Test User 1",
         "email": "user1@test.com",
-        "password": "Test1234",
+        "password": "ScreenSense1!",
         "profile": "recovering",  # stress trending down
         "days": 21,
     },
     {
         "name": "Test User 2",
         "email": "user2@test.com",
-        "password": "Test1234",
+        "password": "ScreenSense2!",
         "profile": "struggling",  # persistently high stress
         "days": 14,
     },
     {
         "name": "Test User 3",
         "email": "user3@test.com",
-        "password": "Test1234",
+        "password": "ScreenSense3!",
         "profile": "stable",  # consistently well
         "days": 18,
     },
     {
         "name": "Test User 4",
         "email": "user4@test.com",
-        "password": "Test1234",
+        "password": "ScreenSense4!",
         "profile": "deteriorating",  # for care pathway / crisis demo
         "days": 14,
     },
@@ -187,7 +187,7 @@ def seed_user_directly(user_id: str, profile: str, days: int) -> int:
 def create_user(user: Dict) -> str | None:
     """Sign up user; if already exists, log in. Returns user_id."""
     # Try signup first
-    r = SESSION.post(f"{BASE}/auth/signup", json={
+    r = SESSION.post(f"{BASE}/api/auth/signup", json={
         "email": user["email"],
         "password": user["password"],
         "name": user["name"],
@@ -199,7 +199,7 @@ def create_user(user: Dict) -> str | None:
 
     if r.status_code == 409:
         # Already exists — log in
-        r2 = SESSION.post(f"{BASE}/auth/login", json={
+        r2 = SESSION.post(f"{BASE}/api/auth/login", json={
             "email": user["email"],
             "password": user["password"],
         })
@@ -262,11 +262,11 @@ def main():
 {SEP}
 Done! {len(USERS)} accounts ready.
 
-Credentials (all passwords: Test1234):
-  user1@test.com  -- Recovering student (21 days, improving stress)
-  user2@test.com  -- Struggling (14 days, high stress)
-  user3@test.com  -- Stable & well (18 days, low stress)
-  user4@test.com  -- Deteriorating (14 days, care pathway demo)
+Credentials:
+  user1@test.com / ScreenSense1!  -- Recovering student (21 days, improving stress)
+  user2@test.com / ScreenSense2!  -- Struggling (14 days, high stress)
+  user3@test.com / ScreenSense3!  -- Stable & well (18 days, low stress)
+  user4@test.com / ScreenSense4!  -- Deteriorating (14 days, care pathway demo)
 {SEP}
 """)
 

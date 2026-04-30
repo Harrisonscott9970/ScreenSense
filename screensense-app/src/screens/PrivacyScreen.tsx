@@ -59,7 +59,7 @@ export default function PrivacyScreen() {
         <Para text="ScreenSense uses the following third-party services:" />
         <Bullet text="Foursquare Places API — for nearby place recommendations (no personal data shared)" />
         <Bullet text="Open-Meteo — for weather data (location only, no personal data)" />
-        <Bullet text="Anthropic Claude API — for Scout AI conversations (messages processed, not stored by Anthropic)" />
+        <Bullet text="ScreenSense bespoke ML engine — for Scout AI conversations (VADER sentiment + BiLSTM distress analysis, processed locally)" />
       </Section>
 
       <Section title="8. Contact">

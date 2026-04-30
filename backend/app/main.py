@@ -139,4 +139,6 @@ async def health():
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "An unexpected error occurred."})
+    # In development, surface the real error so the app can show it
+    detail = str(exc) if not settings.is_production else "An unexpected error occurred."
+    return JSONResponse(status_code=500, content={"detail": detail})

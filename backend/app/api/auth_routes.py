@@ -20,7 +20,7 @@ from app.models.database import get_db, Base, engine
 from app.config import get_settings
 
 settings = get_settings()
-auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
+auth_router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 # ── User model ────────────────────────────────────────────────
 class User(Base):

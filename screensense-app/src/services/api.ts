@@ -1,46 +1,92 @@
 /**
  * ScreenSense API Service
  * =======================
- * Auto-detects web vs mobile. On mobile, reads the server IP from
- * AsyncStorage (set in Profile → Settings) so it works without
- * hard-coding an IP address. Falls back to the bundled default.
- *
- * To change the server IP on mobile:
- *   Profile → Settings → Server IP
+ * URL resolution priority (highest → lowest):
+ *  1. EXPO_PUBLIC_API_URL env var  — written to .env.local by the control panel
+ *                                    before Expo starts (localtunnel URL or LAN IP)
+ *  2. AsyncStorage ss_api_url      — manual override saved by the user in settings
+ *  3. app.json extra.apiUrl        — production cloud deploy
+ *  4. localhost:8000               — browser on the same machine as the backend
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Default IP — change this if needed, or set it in Profile → Settings
+// ── Priority 1: EXPO_PUBLIC_API_URL env var (written by control panel at launch)
+let _envUrl: string | null = null;
+try {
+  const raw = process.env.EXPO_PUBLIC_API_URL;
+  if (raw && raw.startsWith('http')) _envUrl = raw;
+} catch {}
+
+// ── Priority 2: app.json extra.apiUrl (real http URL, non-null)
+let _constantsUrl: string | null = null;
+try {
+  const Constants = require('expo-constants').default;
+  const raw = Constants?.expoConfig?.extra?.apiUrl ?? null;
+  if (raw && typeof raw === 'string' && raw.startsWith('http')) {
+    _constantsUrl = raw;
+  }
+} catch {}
+
+const LOCAL_API = 'http://localhost:8000/api';
+
+// ── Priority 3: Web-only — ONLY apply when browser is at localhost/127.0.0.1.
+// Do NOT guess the backend URL from a tunnel hostname (e.g. exp.direct) because
+// the backend is not exposed at the same tunnel — that causes "network request failed".
+let _webDefault: string | null = null;
+try {
+  if (typeof window !== 'undefined' && window.location) {
+    const { hostname } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      _webDefault = 'http://localhost:8000/api';
+    }
+  }
+} catch {}
+
+// Starting URL priority:
+//  1. EXPO_PUBLIC_API_URL env var (control panel backend tunnel URL)
+//  2. app.json extra.apiUrl (cloud deploy)
+//  3. Web localhost (browser on same machine)
+//  4. localhost:8000 (final fallback)
+let _baseUrl: string = _envUrl ?? _constantsUrl ?? _webDefault ?? LOCAL_API;
+
 export const DEFAULT_LOCAL_IP = '192.168.0.16';
-const PORT = 8000;
-
-// Synchronous base URL used by most components
-// (AsyncStorage is async so we expose a mutable ref + updater)
-let _baseUrl = Platform.OS === 'web'
-  ? 'http://localhost:8000/api'
-  : `http://${DEFAULT_LOCAL_IP}:${PORT}/api`;
-
 export function getBaseURL(): string { return _baseUrl; }
 export let BASE_URL = _baseUrl;
 
-/** Call once at app startup to load the user-saved IP */
+/** Call once at app startup — loads any user-saved URL override */
 export async function initApiUrl(): Promise<void> {
-  if (Platform.OS === 'web') return;
   try {
+    const saved = await AsyncStorage.getItem('ss_api_url');
+    if (saved) {
+      _baseUrl = saved;
+      BASE_URL = saved;
+      return;
+    }
+    // Legacy: saved IP only (local network)
     const savedIp = await AsyncStorage.getItem('ss_server_ip');
     if (savedIp) {
-      _baseUrl  = `http://${savedIp}:${PORT}/api`;
-      BASE_URL  = _baseUrl;
+      const url = `http://${savedIp.trim()}:8000/api`;
+      _baseUrl = url;
+      BASE_URL = url;
     }
   } catch {}
 }
 
-/** Save a new server IP and update the module-level URL */
+/** Persist a full API URL override (e.g. ngrok or cloud backend) */
+export async function setApiUrl(url: string): Promise<void> {
+  const clean = url.trim().replace(/\/$/, '');
+  await AsyncStorage.setItem('ss_api_url', clean);
+  _baseUrl = clean;
+  BASE_URL = clean;
+}
+
+/** Legacy: save just an IP (local network) */
 export async function setServerIp(ip: string): Promise<void> {
+  const url = `http://${ip.trim()}:8000/api`;
   await AsyncStorage.setItem('ss_server_ip', ip.trim());
-  _baseUrl = `http://${ip.trim()}:${PORT}/api`;
-  BASE_URL  = _baseUrl;
+  _baseUrl = url;
+  BASE_URL = url;
 }
 
 // ── Friendly error messages ────────────────────────────────────
@@ -68,10 +114,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const res = await fetch(url, {
       ...options,
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...options?.headers },
+      headers: {
+        'Content-Type': 'application/json',
+        'Bypass-Tunnel-Reminder': 'true',  // skip localtunnel HTML gateway page
+        ...options?.headers,
+      },
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
+      // Pass the server's own error message through — don't obscure it
       throw new Error(body?.detail || `Server error ${res.status}`);
     }
     return res.json();
@@ -79,7 +130,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     if (err?.name === 'AbortError') {
       throw new Error('The server took too long to respond. Please check your connection and try again.');
     }
-    throw new Error(friendlyError(err));
+    const msg = err?.message || String(err);
+    // Only apply friendly network-error wording for connection-level failures
+    if (msg.includes('Failed to fetch') || msg.includes('Network request failed')) {
+      throw new Error('Could not connect to server. Check the Server IP in Profile → Settings.');
+    }
+    // All other errors (server errors, validation errors) pass through as-is
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -212,4 +269,26 @@ export const api = {
   /** Rich ML diagnostics: calibration curves, learning curve, kappa, MCC, CI, etc. */
   mlDiagnostics: () =>
     request<any>('/ml/diagnostics'),
+
+  /** Get server-side programme progress (cross-device sync) */
+  getProgrammes: (userId: string) =>
+    request<any>(`/programmes/${userId}`),
+
+  /** Save programme progress to backend (offline-first: AsyncStorage is primary) */
+  saveProgrammes: (userId: string, data: Record<string, any>) =>
+    request<any>(`/programmes/${userId}`, {
+      method: 'POST',
+      body: JSON.stringify({ data }),
+    }),
+
+  /** Get sleep history from backend */
+  getSleep: (userId: string, limit = 30) =>
+    request<any[]>(`/sleep/${userId}?limit=${limit}`),
+
+  /** Save a single sleep entry to backend */
+  saveSleep: (userId: string, entry: Record<string, any>) =>
+    request<any>('/sleep', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, ...entry }),
+    }),
 };

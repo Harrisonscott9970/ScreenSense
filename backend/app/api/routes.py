@@ -17,7 +17,7 @@ import csv, io, json, random
 from pathlib import Path
 
 import numpy as np
-from app.models.database import get_db, MoodEntry, UserProfile, RecommendationFeedback, ClinicalResult, InterventionLog
+from app.models.database import get_db, MoodEntry, UserProfile, RecommendationFeedback, ClinicalResult, InterventionLog, ProgrammeProgress, SleepEntry
 from app.models.schemas import (
     CheckInRequest, MLEvaluationResponse, PlaceRecommendation
 )
@@ -130,7 +130,9 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
         weather       = await get_weather(req.latitude, req.longitude)
         neighbourhood = await reverse_geocode(req.latitude, req.longitude)
 
-    # 2. Random Forest stress prediction
+    # ── Model 1: Random Forest ─────────────────────────────────────
+    # Builds a 14-feature vector (screen time, sleep, energy, HR, mood,
+    # time encodings, weather) and predicts a stress score 0–1.
     fv = build_feature_vector(
         screen_time_hours   = req.screen_time_hours,
         sleep_hours         = req.sleep_hours,
@@ -155,17 +157,24 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
     fv_list = fv.flatten().tolist()
     shap_explanation = compute_shap_explanation(fv_list, user_norms=user_norms)
 
-    # 4. VADER sentiment on journal text
-    sentiment = analyse_sentiment(req.journal_text or "")
+    # ── Model 2: VADER sentiment ────────────────────────────────────
+    # Combines selected thought chips + journal text into one string
+    # so VADER scores the full picture, not just the journal alone.
+    thought_prefix = ""
+    if req.mood_words:
+        thought_prefix = "I am experiencing: " + ", ".join(req.mood_words) + ". "
+    nlp_text = thought_prefix + (req.journal_text or "")
+    sentiment = analyse_sentiment(nlp_text)
 
-    # 5. BiLSTM distress classification on journal text
-    distress_result = classify_distress(req.journal_text or "")
+    # ── Model 3: BiLSTM distress classifier ────────────────────────
+    # Runs on the same enriched text so thought patterns are understood.
+    distress_result = classify_distress(nlp_text)
     distress_class  = distress_result.get('class', 'neutral')
     distress_conf   = distress_result.get('confidence', 0.5)
 
     # 6a. Ensemble prediction: RF + BiLSTM (Torous et al., 2017)
-    # When journal text is present, combine device signals with NLP signals
-    has_journal = bool(req.journal_text and len(req.journal_text.strip()) > 5)
+    # NLP signal is available when the user wrote journal text OR selected thought patterns
+    has_journal = bool(nlp_text.strip()) and len(nlp_text.strip()) > 10
     ensemble_result = predict_stress_ensemble(
         feature_vector     = fv,
         distress_class     = distress_class,
@@ -1101,38 +1110,88 @@ async def seed_test_data(data: dict, db: Session = Depends(get_db)):
     This is a development/demo endpoint — it lets markers and developers
     verify the online-learning pipeline end-to-end in under 30 seconds.
     """
-    user_id = data.get("user_id", "user_001")
-    # accept either "n" or "count"; cap raised to 500 to support demo pre-training
-    n       = min(int(data.get("n", data.get("count", 20))), 500)
+    user_id  = data.get("user_id", "user_001")
+    n        = min(int(data.get("n", data.get("count", 20))), 500)
+    scenario = data.get("scenario", "mixed")  # mixed | high_stress | low_stress | crisis | improving
 
     MOODS   = ['anxious', 'stressed', 'low', 'numb', 'calm', 'content', 'energised', 'joyful']
     VALENCE = {'anxious': -0.70, 'stressed': -0.60, 'low': -0.80, 'numb': -0.40,
                'calm': 0.60, 'content': 0.70, 'energised': 0.50, 'joyful': 0.90}
     STRESS_CAT = {(0.0, 0.33): 'low', (0.33, 0.66): 'moderate', (0.66, 1.01): 'high'}
 
+    HIGH_MOODS = ['anxious', 'stressed', 'low', 'numb']
+    LOW_MOODS  = ['calm', 'content', 'energised', 'joyful']
+
     now = datetime.utcnow()
     created = []
 
     for i in range(n):
-        # Spread entries back over the last 30 days
-        ts          = now - timedelta(days=random.uniform(0, 30), hours=random.uniform(0, 12))
-        sleep_h     = round(random.gauss(6.8, 1.2), 1)
-        screen_h    = round(max(0.5, random.gauss(4.5, 2.0)), 1)
-        energy      = random.randint(2, 9)
-        hr          = round(random.gauss(68, 9), 1)
-        scroll_mins = round(max(1, random.expovariate(1 / 20)), 1)
-        mood        = random.choice(MOODS)
-        valence     = VALENCE[mood]
+        ts = now - timedelta(days=random.uniform(0, 14), hours=random.uniform(0, 12))
 
-        raw_stress = (
-            0.28 * min(screen_h / 10, 1.0) +
-            0.22 * max(0, (8 - sleep_h) / 8) +
-            0.16 * (1 - energy / 10) +
-            0.12 * min(scroll_mins / 60, 1.0) +
-            0.08 * max(0, (hr - 70) / 40) +
-            random.gauss(0, 0.07)
-        )
-        stress = round(min(max(raw_stress * 1.5, 0.02), 0.98), 4)
+        # --- Scenario-specific data profiles ---
+        if scenario == "high_stress":
+            sleep_h     = round(random.gauss(4.5, 0.8), 1)
+            screen_h    = round(max(6.0, random.gauss(9.0, 1.5)), 1)
+            energy      = random.randint(1, 4)
+            hr          = round(random.gauss(82, 8), 1)
+            scroll_mins = round(max(30, random.gauss(60, 15)), 1)
+            mood        = random.choice(HIGH_MOODS)
+            stress_bias = 0.75
+
+        elif scenario == "crisis":
+            sleep_h     = round(random.gauss(3.5, 0.5), 1)
+            screen_h    = round(max(8.0, random.gauss(11.0, 1.0)), 1)
+            energy      = random.randint(1, 2)
+            hr          = round(random.gauss(90, 6), 1)
+            scroll_mins = round(max(60, random.gauss(90, 10)), 1)
+            mood        = random.choice(['anxious', 'low', 'numb'])
+            stress_bias = 0.92
+
+        elif scenario == "low_stress":
+            sleep_h     = round(random.gauss(7.5, 0.6), 1)
+            screen_h    = round(max(0.5, random.gauss(2.5, 1.0)), 1)
+            energy      = random.randint(6, 10)
+            hr          = round(random.gauss(62, 5), 1)
+            scroll_mins = round(max(1, random.gauss(10, 5)), 1)
+            mood        = random.choice(LOW_MOODS)
+            stress_bias = 0.12
+
+        elif scenario == "improving":
+            # Stress decreases over the entry range
+            progress    = i / max(n - 1, 1)
+            sleep_h     = round(random.gauss(5.0 + 2.5 * progress, 0.7), 1)
+            screen_h    = round(max(0.5, random.gauss(8.5 - 5.0 * progress, 1.0)), 1)
+            energy      = max(1, min(10, int(3 + 7 * progress + random.gauss(0, 0.8))))
+            hr          = round(random.gauss(80 - 15 * progress, 6), 1)
+            scroll_mins = round(max(1, random.gauss(55 - 40 * progress, 10)), 1)
+            mood        = random.choice(HIGH_MOODS if progress < 0.5 else LOW_MOODS)
+            stress_bias = max(0.08, 0.85 - 0.7 * progress)
+            ts          = now - timedelta(days=(n - i - 1) * (14 / max(n, 1)))
+
+        else:  # mixed
+            sleep_h     = round(random.gauss(6.8, 1.2), 1)
+            screen_h    = round(max(0.5, random.gauss(4.5, 2.0)), 1)
+            energy      = random.randint(2, 9)
+            hr          = round(random.gauss(68, 9), 1)
+            scroll_mins = round(max(1, random.expovariate(1 / 20)), 1)
+            mood        = random.choice(MOODS)
+            stress_bias = None
+
+        valence = VALENCE[mood]
+
+        if stress_bias is not None:
+            raw_stress = stress_bias + random.gauss(0, 0.06)
+        else:
+            raw_stress = (
+                0.28 * min(screen_h / 10, 1.0) +
+                0.22 * max(0, (8 - sleep_h) / 8) +
+                0.16 * (1 - energy / 10) +
+                0.12 * min(scroll_mins / 60, 1.0) +
+                0.08 * max(0, (hr - 70) / 40) +
+                random.gauss(0, 0.07)
+            ) * 1.5
+
+        stress = round(min(max(raw_stress, 0.02), 0.98), 4)
         stress_cat = next(v for (lo, hi), v in STRESS_CAT.items() if lo <= stress < hi)
 
         entry = MoodEntry(
@@ -1150,9 +1209,9 @@ async def seed_test_data(data: dict, db: Session = Depends(get_db)):
             predicted_stress_score = stress,
             stress_category       = stress_cat,
             sentiment_score       = valence * 0.4 + random.gauss(0, 0.1),
-            distress_class        = 'minimal' if stress < 0.33 else 'mild' if stress < 0.55 else 'moderate',
-            care_level            = 1 if stress < 0.33 else 2 if stress < 0.55 else 3,
-            personalised_message  = f"Seeded test entry {i + 1}",
+            distress_class        = 'minimal' if stress < 0.33 else 'mild' if stress < 0.55 else 'moderate' if stress < 0.80 else 'high',
+            care_level            = 1 if stress < 0.33 else 2 if stress < 0.55 else 3 if stress < 0.82 else 4,
+            personalised_message  = f"Demo entry [{scenario}] {i + 1}",
             latitude              = None,
             longitude             = None,
         )
@@ -1177,7 +1236,7 @@ async def seed_test_data(data: dict, db: Session = Depends(get_db)):
         "entries_created": n,   # alias for control-panel compatibility
         "user_id":         user_id,
         "stress_dist":   stress_dist,
-        "message":       f"✓ {n} synthetic entries added to DB for {user_id}. Now press 'Retrain AI' in the Insights tab.",
+        "message":       f"✓ {n} synthetic entries [{scenario}] added for {user_id}.",
         "next_step":     "POST /api/retrain with { \"user_id\": \"" + user_id + "\" }",
     }
 
@@ -1258,6 +1317,76 @@ async def crisis_resources():
     }
 
 
+@router.post("/scout/message")
+async def scout_message(data: dict, db: Session = Depends(get_db)):
+    """
+    Scout AI companion — fully bespoke wellbeing conversation engine.
+
+    Uses ScreenSense's own three-model ML stack exclusively:
+      - Random Forest  — stress score from device signals (Breiman, 2001)
+      - BiLSTM         — distress classification from message text
+      - VADER          — sentiment analysis (Hutto & Gilbert, 2014)
+    Plus: crisis keyword scan, nudge engine CBT prompts, NHS Stepped Care.
+
+    Every response is explainable and traceable to a specific ML signal.
+    """
+    from app.ml.scout_engine import generate_scout_response
+
+    user_id  = data.get("user_id", "user_001")
+    message  = data.get("message", "")
+    messages = data.get("messages", [])   # conversation history list
+    history_len = len([m for m in messages if m.get("role") == "user"])
+
+    # Extract latest user message text for ML analysis
+    if not message and messages:
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m.get("role") == "user"),
+            ""
+        )
+        message = last_user if isinstance(last_user, str) else ""
+
+    # Fetch live user context from DB
+    profile = db.query(UserProfile).filter_by(user_id=user_id).first()
+    recent  = (
+        db.query(MoodEntry).filter_by(user_id=user_id)
+        .order_by(MoodEntry.created_at.desc()).limit(3).all()
+    )
+    latest  = recent[0] if recent else None
+    stress_score    = float(latest.predicted_stress_score) if latest else 0.4
+    stress_category = latest.stress_category               if latest else "moderate"
+    mood_label      = latest.mood_label                    if latest else "calm"
+    distress_class  = latest.distress_class or "neutral"   if latest else "neutral"
+    care_level      = int(latest.care_level or 1)          if latest else 1
+
+    # Override care_level from profile avg if latest is stale
+    if profile and profile.avg_stress:
+        avg = float(profile.avg_stress)
+        if avg > 0.75 and care_level < 3:
+            care_level = 3
+        elif avg > 0.55 and care_level < 2:
+            care_level = 2
+
+    # Generate bespoke response using ScreenSense ML engine
+    response = generate_scout_response(
+        user_message=message,
+        care_level=care_level,
+        stress_score=stress_score,
+        stress_category=stress_category,
+        mood_label=mood_label,
+        distress_class=distress_class,
+        history_len=history_len,
+    )
+
+    # Return in the same shape the frontend expects from the old proxy
+    return {
+        "content": [{"text": response["text"]}],
+        "cbt_prompt": response.get("cbt_prompt"),
+        "category":   response.get("category"),
+        "signals":    response.get("signals"),
+        "engine":     "screensense-bespoke-v1",
+    }
+
+
 @router.get("/entries/{user_id}")
 async def get_entries(user_id: str, limit: int = 50, db: Session = Depends(get_db)):
     entries = (
@@ -1300,16 +1429,20 @@ async def get_nearby_places(
     """
     Returns live place recommendations based on current GPS coordinates.
     Uses the nudge engine to select categories for the given mood/stress,
-    then queries OpenStreetMap Overpass for real nearby venues.
+    time of day, and live weather — so recommendations adapt dynamically.
     Called directly by MapScreen — no check-in required.
     """
     from datetime import datetime as _dt
+    # Fetch live weather so recommendations adapt to conditions
+    weather = await get_weather(lat, lon)
     nudge = generate_nudge(
         stress_category   = stress_category,
         mood_label        = mood,
         screen_time_hours = 0,
         sleep_hours       = 7,
         hour_of_day       = _dt.utcnow().hour,
+        weather_condition = weather.get("condition") or "Unknown",
+        weather_temp_c    = float(weather.get("temp_c") or 15.0),
     )
     from app.services.external_apis import get_places as _gp
     raw = await _gp(lat=lat, lon=lon, categories=nudge.place_categories)
@@ -1326,6 +1459,9 @@ async def get_nearby_places(
     }
     default_reason = "Recommended based on your current affect profile"
 
+    from datetime import datetime as _dt2
+    _hour = _dt2.utcnow().hour
+    _time_label = "morning" if _hour < 12 else "afternoon" if _hour < 17 else "evening" if _hour < 21 else "night"
     return {
         "places": [
             {
@@ -1338,8 +1474,11 @@ async def get_nearby_places(
             }
             for p in raw[:4]
         ],
-        "rationale":  nudge.place_rationale,
-        "categories": nudge.place_categories,
+        "rationale":      nudge.place_rationale,
+        "categories":     nudge.place_categories,
+        "weather":        {"condition": weather.get("condition"), "temp_c": weather.get("temp_c")},
+        "time_of_day":    _time_label,
+        "hour":           _hour,
     }
 
 
@@ -1549,3 +1688,94 @@ def _generate_weekly_narrative(n, top_mood, avg_stress, trend, avg_sleep, avg_sc
         f"was {worst_day.created_at.strftime('%A')} "
         f"(stress {round(worst_day.predicted_stress_score * 100)}/100)."
     )
+
+
+# ── Programme Progress ─────────────────────────────────────────────────────
+@router.get("/programmes/{user_id}")
+async def get_programme_progress(user_id: str, db: Session = Depends(get_db)):
+    """
+    Retrieve server-side programme progress for offline-first sync.
+    Returns the JSON data blob so SleepScreen/ProgrammeScreen can reconcile
+    local AsyncStorage state against server state on login.
+    """
+    row = db.query(ProgrammeProgress).filter_by(user_id=user_id).first()
+    if not row:
+        return {"user_id": user_id, "data": {}}
+    return {"user_id": user_id, "data": row.data, "updated_at": row.updated_at.isoformat() if row.updated_at else None}
+
+
+@router.post("/programmes/{user_id}")
+async def save_programme_progress(user_id: str, body: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Upsert structured programme progress for cross-device sync and
+    persistence across app reinstalls. Implements offline-first: the client
+    always writes to AsyncStorage first and syncs here as a side-effect.
+    """
+    data = body.get("data", {})
+    row = db.query(ProgrammeProgress).filter_by(user_id=user_id).first()
+    if row:
+        row.data = data
+        row.updated_at = datetime.utcnow()
+    else:
+        row = ProgrammeProgress(user_id=user_id, data=data)
+        db.add(row)
+    db.commit()
+    return {"saved": True, "user_id": user_id}
+
+
+# ── Sleep Tracking ─────────────────────────────────────────────────────────
+@router.get("/sleep/{user_id}")
+async def get_sleep_entries(user_id: str, limit: int = 30, db: Session = Depends(get_db)):
+    """Return the most recent sleep entries for the given user."""
+    entries = (
+        db.query(SleepEntry)
+        .filter_by(user_id=user_id)
+        .order_by(SleepEntry.date.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "date":      e.date,
+            "bedtime":   e.bedtime,
+            "wakeTime":  e.wake_time,
+            "duration":  e.duration,
+            "quality":   e.quality,
+            "notes":     e.notes,
+            "saved":     e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
+
+
+@router.post("/sleep")
+async def save_sleep_entry(body: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Upsert a single nightly sleep record (deduplicates on user_id + date).
+    Enables longitudinal sleep analysis alongside check-in stress data —
+    aligned with Harvey (2002) CBT-I recommendations for sleep diary tracking.
+    """
+    user_id  = body.get("user_id", "")
+    date     = body.get("date", "")
+    if not user_id or not date:
+        raise HTTPException(status_code=400, detail="user_id and date are required")
+
+    existing = db.query(SleepEntry).filter_by(user_id=user_id, date=date).first()
+    if existing:
+        existing.bedtime   = body.get("bedtime",  existing.bedtime)
+        existing.wake_time = body.get("wakeTime", existing.wake_time)
+        existing.duration  = body.get("duration", existing.duration)
+        existing.quality   = body.get("quality",  existing.quality)
+        existing.notes     = body.get("notes",    existing.notes)
+    else:
+        entry = SleepEntry(
+            user_id=user_id, date=date,
+            bedtime=body.get("bedtime"),
+            wake_time=body.get("wakeTime"),
+            duration=body.get("duration"),
+            quality=body.get("quality"),
+            notes=body.get("notes"),
+        )
+        db.add(entry)
+    db.commit()
+    return {"saved": True, "user_id": user_id, "date": date}

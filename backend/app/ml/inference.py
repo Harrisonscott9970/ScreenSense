@@ -128,6 +128,44 @@ def build_feature_vector(
     return vector
 
 
+def _heuristic_stress(feature_vector: np.ndarray) -> dict:
+    """
+    Heuristic fallback when the trained model is unavailable.
+    Uses the same weighted formula as the synthetic data generator so
+    results are directionally consistent with what the RF would predict.
+    """
+    fv = feature_vector.flatten()
+    # Indices match FEATURES order in synthetic_data.py
+    screen_h  = float(fv[0]) if len(fv) > 0 else 4.0
+    sleep_h   = float(fv[1]) if len(fv) > 1 else 7.0
+    energy    = float(fv[2]) if len(fv) > 2 else 5.0
+    scroll    = float(fv[5]) if len(fv) > 5 else 15.0
+    hr        = float(fv[6]) if len(fv) > 6 else 68.0
+    valence   = float(fv[7]) if len(fv) > 7 else 0.0
+
+    raw = (
+        0.28 * min(screen_h / 10, 1.0) +
+        0.22 * max(0, (8 - sleep_h) / 8) +
+        0.16 * (1 - energy / 10) +
+        0.12 * min(scroll / 60, 1.0) +
+        0.08 * max(0, (hr - 70) / 40) +
+        0.10 * max(0, -valence)          # negative mood adds stress
+    )
+    score = float(np.clip(raw, 0.02, 0.98))
+    if score < 0.33:
+        cat, p_low, p_mod, p_high = 'low',      0.75, 0.20, 0.05
+    elif score < 0.66:
+        cat, p_low, p_mod, p_high = 'moderate', 0.15, 0.70, 0.15
+    else:
+        cat, p_low, p_mod, p_high = 'high',     0.05, 0.20, 0.75
+    return {
+        'stress_score':        round(score, 4),
+        'stress_category':     cat,
+        'class_probabilities': {'low': p_low, 'moderate': p_mod, 'high': p_high},
+        'fallback':            True,
+    }
+
+
 def predict_stress(feature_vector: np.ndarray) -> dict:
     """
     Returns stress score (0–1) and category (low/moderate/high).
@@ -137,7 +175,10 @@ def predict_stress(feature_vector: np.ndarray) -> dict:
     balanced datasets.
     """
     import pandas as pd
-    model = load_model()
+    try:
+        model = load_model()
+    except FileNotFoundError:
+        return _heuristic_stress(feature_vector)
     # Pass as DataFrame to avoid feature-name warning from StandardScaler
     fv_df = pd.DataFrame(feature_vector, columns=FEATURES)
     classes = model.classes_

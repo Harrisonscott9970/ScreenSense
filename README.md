@@ -465,10 +465,12 @@ ScreenSense successfully demonstrates a working full-stack wellbeing prototype w
 ### Limitations
 
 - Limited real-world user testing
-- Some training data may be synthetic
+- Some training data may be synthetic or limited in size
 - Model performance may not generalise to all users
 - Recommendations should not be interpreted as clinical advice
-- The app would need stronger longitudinal testing to prove long-term well-being impact
+- More time was needed for final quality assurance and polish
+- Deployment, authentication, and secure production storage would require more work
+- The app would need stronger longitudinal testing to prove long-term wellbeing impact
 
 ### Reflection on Outcome
 
@@ -664,13 +666,6 @@ Before real deployment, the following improvements would be required:
 
 ## 25. Screenshots
 
-<img width="399" height="864" alt="IMG_1530" src="https://github.com/user-attachments/assets/13af8434-6886-4d45-9c17-8fd81f654f00" />
-Check-in screen
-<img width="399" height="864" alt="IMG_1531" src="https://github.com/user-attachments/assets/f0bf1b1d-6e9b-4411-b954-83a3f7637179" />
-Nearby places based on your mood
-<img width="399" height="864" alt="IMG_1546" src="https://github.com/user-attachments/assets/f1615f78-35ad-44b5-9fc1-9ae68428bac5" />
-Analysis of your stress
-
 ---
 
 ## 26. Future Work
@@ -689,7 +684,7 @@ Future improvements could include:
 - accessibility testing
 - improved UI polish
 - more robust deployment
-- better separation between clinical escalation and general well-being suggestions
+- better separation between clinical escalation and general wellbeing suggestions
 - improved backup and release management process
 
 ---
@@ -719,3 +714,9 @@ ScreenSense meets the project aim by delivering a working personalised digital w
 The project demonstrates software engineering, machine learning implementation, ethical awareness, project planning, testing, and critical reflection. It also shows how a static wellbeing advice system can be extended into a more adaptive and personalised recommendation system.
 
 The final implementation is not a finished commercial or clinical product, but it provides a strong research and development foundation for future work in personalised digital wellbeing applications.
+
+---
+
+## 29. Licence
+
+MIT Licence.

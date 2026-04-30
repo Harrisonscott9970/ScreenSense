@@ -14,7 +14,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { C, Space, Radius, Shadow } from './src/utils/theme';
-import { initApiUrl, BASE_URL, api } from './src/services/api';
+import { BASE_URL, api } from './src/services/api';
 import { setupNotifications, scheduleWeeklyReport, addNotificationResponseListener } from './src/utils/notifications';
 
 import OnboardingScreen    from './src/screens/OnboardingScreen';
@@ -31,6 +31,8 @@ import SleepScreen         from './src/screens/SleepScreen';
 import WeeklyReportScreen  from './src/screens/WeeklyReportScreen';
 import PrivacyScreen       from './src/screens/PrivacyScreen';
 import CrisisScreen        from './src/screens/CrisisScreen';
+import ScoutScreen         from './src/screens/ScoutScreen';
+import ConsentScreen       from './src/screens/ConsentScreen';
 
 // ── Global error boundary — prevents blank screen on uncaught JS errors ──
 class ErrorBoundary extends Component<
@@ -66,7 +68,7 @@ const IS_WEB = Platform.OS === 'web' && width > 768;
 
 type Tab = 'checkin' | 'map' | 'therapy' | 'programmes' |
            'clinical' | 'sleep' | 'log' | 'insights' | 'profile' |
-           'weekly' | 'privacy' | 'crisis';
+           'weekly' | 'privacy' | 'crisis' | 'scout';
 
 const BOTTOM_TABS = [
   { tab: 'checkin'  as Tab, icon: '🌡', label: 'Check-in' },
@@ -114,7 +116,7 @@ async function removeItems(keys: string[]) {
 }
 
 function AppInner() {
-  const [phase, setPhase]   = useState<'loading' | 'onboarding' | 'auth' | 'app'>('loading');
+  const [phase, setPhase]   = useState<'loading' | 'consent' | 'onboarding' | 'auth' | 'app'>('loading');
   const [user, setUser]     = useState<{ id: string; name: string; email: string; token: string } | null>(null);
   const [tab, setTab]       = useState<Tab>('checkin');
   const [lastMood, setLastMood]     = useState<string | undefined>();
@@ -152,46 +154,55 @@ function AppInner() {
       Animated.timing(breathe, { toValue: 0, duration: 8000, useNativeDriver: true }),
     ])).start();
 
-    // Load saved server IP before any API calls
-    initApiUrl().catch(() => {});
+    // Clear any stale server URL overrides from the old settings UI (now removed)
+    AsyncStorage.multiRemove(['ss_api_url', 'ss_server_ip']).catch(() => {});
 
     // Navigate to correct screen when user taps a notification
     const removeSub = addNotificationResponseListener((screen) => {
-      if (screen === 'weekly') setTab('weekly');
+      if (screen === 'weekly')  setTab('weekly');
+      if (screen === 'therapy') setTab('therapy');
+      if (screen === 'checkin') setTab('checkin');
     });
 
     // Restore session from AsyncStorage (works on mobile + web)
     (async () => {
-      const id        = await getItem('ss_user_id');
-      const name      = await getItem('ss_user_name');
-      const email     = await getItem('ss_user_email');
-      const token     = await getItem('ss_token');
-      const onboarded = await getItem('ss_onboarded');
+      try {
+        const id        = await getItem('ss_user_id');
+        const name      = await getItem('ss_user_name');
+        const email     = await getItem('ss_user_email');
+        const token     = await getItem('ss_token');
+        const onboarded = await getItem('ss_onboarded');
+        const consented = await getItem('ss_consented');
 
-      if (id && name && token) {
-        setUser({ id, name, email: email ?? '', token });
-        setPhase('app');
-        // Restore last check-in result so Map shows correct data on relaunch
-        try {
-          const res = await fetch(`${BASE_URL}/entries/${id}?limit=1`);
-          if (res.ok) {
-            const entries = await res.json();
-            if (entries?.length > 0) {
-              const e = entries[0];
-              setLastMood(e.mood_label);
-              setLastStress(e.stress_score ?? e.predicted_stress_score);
-              setLastResult({
-                place_recommendations: e.place_recommendations || [],
-                care_level: e.care_level,
-                risk_factors_detected: [],
-              });
+        if (id && name && token) {
+          setUser({ id, name, email: email ?? '', token });
+          setPhase('app');
+          // Restore last check-in result so Map shows correct data on relaunch
+          try {
+            const res = await fetch(`${BASE_URL}/entries/${id}?limit=1`);
+            if (res.ok) {
+              const entries = await res.json();
+              if (entries?.length > 0) {
+                const e = entries[0];
+                setLastMood(e.mood_label);
+                setLastStress(e.stress_score ?? e.predicted_stress_score);
+                setLastResult({
+                  place_recommendations: e.place_recommendations || [],
+                  care_level: e.care_level,
+                  risk_factors_detected: [],
+                });
+              }
             }
-          }
-        } catch {}
-      } else if (onboarded) {
+          } catch {}
+        } else if (onboarded || consented) {
+          // Already gone through onboarding/consent before — skip straight to auth
+          setPhase('auth');
+        } else {
+          setPhase('consent');
+        }
+      } catch {
+        // AsyncStorage failure — fail safe to auth screen
         setPhase('auth');
-      } else {
-        setPhase('onboarding');
       }
     })();
 
@@ -252,6 +263,21 @@ function AppInner() {
 
   if (phase === 'loading') return <View style={s.root}><Bg /></View>;
 
+  if (phase === 'consent') return (
+    <View style={s.root}><StatusBar style="light" /><Bg />
+      <SafeAreaView style={{ flex: 1 }}>
+        <ConsentScreen
+          onComplete={async (consents) => {
+            await storeItem('ss_consented', '1');
+            // Persist individual consent choices for later reference
+            await storeItem('ss_consent_choices', JSON.stringify(consents));
+            setPhase('onboarding');
+          }}
+        />
+      </SafeAreaView>
+    </View>
+  );
+
   if (phase === 'onboarding') return (
     <View style={s.root}><StatusBar style="light" /><Bg />
       <SafeAreaView style={{ flex: 1 }}>
@@ -289,10 +315,22 @@ function AppInner() {
             lastResult={lastResult}
           />
         );
-      case 'therapy':    return <TherapyScreen />;
-      case 'programmes': return <ProgrammeScreen />;
+      case 'therapy':    return <TherapyScreen userId={user.id} />;
+      case 'programmes': return <ProgrammeScreen userId={user.id} />;
       case 'clinical':   return <ClinicalScreen userId={user.id} />;
-      case 'sleep':      return <SleepScreen />;
+      case 'sleep':      return <SleepScreen userId={user.id} />;
+      case 'scout':
+        return (
+          <ScoutScreen
+            userId={user.id}
+            userName={user.name}
+            currentMood={lastMood}
+            currentStress={lastStress}
+            careLevel={lastResult?.care_level}
+            lastResult={lastResult}
+            onNavigate={(screen) => setTab(screen as Tab)}
+          />
+        );
       case 'log':        return <LogScreen userId={user.id} />;
       case 'insights':   return <InsightsScreen userId={user.id} />;
       case 'weekly':     return <WeeklyReportScreen userId={user.id} />;
@@ -428,8 +466,8 @@ function AppInner() {
         )}
 
         <View style={ws.footer}>
-          <Text style={ws.footTxt}>Harrison Scott · 10805603</Text>
-          <View style={ws.footBadge}><Text style={ws.footBadgeTxt}>Affective Computing</Text></View>
+          <Text style={ws.footTxt}>{user.name}</Text>
+          <View style={ws.footBadge}><Text style={ws.footBadgeTxt}>ScreenSense</Text></View>
         </View>
       </View>
 

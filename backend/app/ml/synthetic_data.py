@@ -242,13 +242,16 @@ def generate(seed: int = 42, n: int = N, suffix: str = '') -> pd.DataFrame:
                 spillover                                +
                 temp_stress_adj
             )
-            noise  = rng.normal(0, 0.06)
+            # Higher noise (0.10) reflects genuine real-world variability —
+            # the same person on different days with identical inputs can feel
+            # differently. This prevents the model memorising the formula.
+            noise  = rng.normal(0, 0.10)
             stress = float(np.clip(raw_stress * 1.35 + noise, 0.02, 0.98))
 
             # ── Mood (Russell circumplex, 1980) ───────────────────
-            mood   = _sample_mood(stress, rng)
+            mood    = _sample_mood(stress, rng)
             valence = _MOOD_VALENCE[mood]
-            stress = float(np.clip(stress - valence * 0.08, 0.02, 0.98))
+            stress  = float(np.clip(stress - valence * 0.08, 0.02, 0.98))
 
             user_prev_stress[uid] = stress
 
@@ -258,8 +261,22 @@ def generate(seed: int = 42, n: int = N, suffix: str = '') -> pd.DataFrame:
             day_sin  = float(np.sin(2 * np.pi * day  / 7))
             day_cos  = float(np.cos(2 * np.pi * day  / 7))
 
-            # ── Stress label ──────────────────────────────────────
-            if stress < 0.33:
+            # ── Stress label — probabilistic near boundaries ───────
+            # Hard cutoffs (0.33 / 0.66) are unrealistic: someone with
+            # stress=0.32 and stress=0.34 are functionally identical.
+            # Within ±0.07 of each boundary, labels are sampled
+            # probabilistically, reflecting real clinical ambiguity
+            # (cf. Cohen, 1988 — measurement error in psychological scales).
+            BOUNDARY_WIDTH = 0.07
+            if abs(stress - 0.33) < BOUNDARY_WIDTH:
+                # Near low/moderate boundary
+                p_low = 1.0 - (stress - (0.33 - BOUNDARY_WIDTH)) / (2 * BOUNDARY_WIDTH)
+                label = 'low' if rng.random() < p_low else 'moderate'
+            elif abs(stress - 0.66) < BOUNDARY_WIDTH:
+                # Near moderate/high boundary
+                p_mod = 1.0 - (stress - (0.66 - BOUNDARY_WIDTH)) / (2 * BOUNDARY_WIDTH)
+                label = 'moderate' if rng.random() < p_mod else 'high'
+            elif stress < 0.33:
                 label = 'low'
             elif stress < 0.66:
                 label = 'moderate'
