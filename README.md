@@ -31,6 +31,15 @@ Before running ScreenSense, make sure the following are installed:
 
 > **Windows users:** When installing Python, tick **"Add Python to PATH"** on the first installer screen. Without this, the control panel and backend will not start.
 
+> **Accounts:**  To log in, simply enter any email address and a password of your choice on the signup screen and tap **Sign In** — the app will create a new account automatically. No email verification is required. If you are unsure what format to use, see `demoaccountspasswords.txt` in the project folder for an example.
+
+> **If Expo fails to start**, open a terminal in the project folder and run:
+> ```bash
+> cd screensense-app
+> npm install
+> ```
+> Then hit **Start** again in the control panel.
+
 ---
 
 ## Quick Start
