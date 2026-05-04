@@ -29,6 +29,8 @@ Before running ScreenSense, make sure the following are installed:
 
 > **Windows users:** When installing Python, tick **"Add Python to PATH"** on the first installer screen. Without this, the control panel and backend will not start.
 
+> **First run:** Expo may take 2–3 minutes to install on first launch. The QR code will appear once it's ready.
+
 ## Demo Accounts
 Four pre-made test accounts are available to log in and explore the app immediately:
 | Email           | Password       |
