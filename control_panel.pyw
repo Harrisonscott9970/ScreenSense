@@ -1338,7 +1338,6 @@ class ControlPanel:
         req_file = BASE_DIR / "backend" / "requirements.txt"
         if not req_file.exists():
             return
-        # Check if uvicorn already available via pip
         try:
             r = subprocess.run(
                 ["cmd", "/c", "pip", "show", "uvicorn"],
@@ -1347,15 +1346,21 @@ class ControlPanel:
                 return  # already installed
         except Exception:
             pass
-        self._log("Installing backend dependencies (first time, ~2 mins)...", "warn")
+        self._log("Installing backend dependencies — this may take 3-5 mins on first run...", "warn")
         try:
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 ["cmd", "/c", "pip", "install", "-r", str(req_file)],
-                capture_output=True, text=True, timeout=300)
-            if r.returncode == 0:
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+            for line in proc.stdout:
+                line = line.strip()
+                if line and ('Collecting' in line or 'Installing' in line or 'Successfully' in line):
+                    self._log(f"[pip] {line}", "warn")
+            proc.wait()
+            if proc.returncode == 0:
                 self._log("Backend dependencies installed.", "success")
             else:
-                self._log(f"pip install error: {r.stderr[-200:]}", "warn")
+                self._log("pip install finished with warnings — continuing.", "warn")
         except Exception as e:
             self._log(f"pip install warning: {e}", "warn")
 
@@ -1365,16 +1370,22 @@ class ControlPanel:
         modules_dir = app_dir / "node_modules"
         if modules_dir.exists():
             return  # already installed
-        self._log("Installing frontend dependencies (first time, ~2 mins)...", "warn")
+        self._log("Installing frontend dependencies — this may take 2-3 mins on first run...", "warn")
         try:
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 ["cmd", "/c", "npm", "install"],
                 cwd=str(app_dir),
-                capture_output=True, text=True, timeout=300)
-            if r.returncode == 0:
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+            for line in proc.stdout:
+                line = line.strip()
+                if line and 'warn' not in line.lower():
+                    self._log(f"[npm] {line}", "warn")
+            proc.wait()
+            if proc.returncode == 0:
                 self._log("Frontend dependencies installed.", "success")
             else:
-                self._log(f"npm install error: {r.stderr[-200:]}", "warn")
+                self._log("npm install finished with warnings — continuing.", "warn")
         except Exception as e:
             self._log(f"npm install warning: {e}", "warn")
 

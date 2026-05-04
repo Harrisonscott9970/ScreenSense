@@ -19,6 +19,47 @@
 
 ---
 
+## Prerequisites
+
+Before running ScreenSense, make sure the following are installed:
+
+| Tool | Version | Download |
+|------|---------|----------|
+| Python | 3.11 | https://www.python.org/downloads/ |
+| Node.js | 18+ | https://nodejs.org/ |
+| Expo Go (phone) | Latest | App Store / Google Play |
+
+> **Windows users:** When installing Python, tick **"Add Python to PATH"** on the first installer screen. Without this, the control panel and backend will not start.
+
+---
+
+## Quick Start
+
+1. Download and extract the ZIP
+2. Install Python 3.11 *(tick "Add to PATH")* and Node.js from the links above
+3. Double-click **`ScreenSense Control Panel.bat`**
+4. Hit **Start ScreenSense** — dependencies install automatically on first run
+5. Scan the QR code with **Expo Go** on your phone
+
+> **First run:** Expo may take 2–3 minutes to install. The QR code will appear once it's ready.
+
+---
+
+## Demo Accounts
+
+Four pre-made test accounts are available to log in and explore the app immediately:
+
+| Email | Password |
+|-------|----------|
+| user1@test.com | ScreenSense1! |
+| user2@test.com | ScreenSense2! |
+| user3@test.com | ScreenSense3! |
+| user4@test.com | ScreenSense4! |
+
+> If the database is reset, recreate accounts with: `python create_test_users.py`
+
+---
+
 ## 1. Project Overview
 
 ScreenSense is a mobile digital wellbeing application designed to help students and young adults manage screen time, build healthier habits, and receive personalised wellbeing support.
