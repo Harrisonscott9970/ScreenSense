@@ -1396,10 +1396,11 @@ class ControlPanel:
             self._log(f"pip install warning: {e}", "warn")
 
     def _ensure_npm_deps(self):
-        """Run npm install in screensense-app if node_modules is missing."""
+        """Run npm install in screensense-app to ensure all packages are present."""
         app_dir = os.path.join(BASE, "screensense-app")
-        modules_dir = os.path.join(app_dir, "node_modules")
-        if os.path.exists(modules_dir):
+        # Check for expo specifically, not just node_modules folder
+        expo_check = os.path.join(app_dir, "node_modules", "expo", "package.json")
+        if os.path.exists(expo_check):
             return
         self._log("Installing frontend dependencies (first run only, ~2 mins)...", "warn")
         try:
