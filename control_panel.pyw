@@ -1288,6 +1288,14 @@ class ControlPanel:
         local_ip = self._get_local_ip()
         self._log(f"Local IP: {local_ip}")
 
+        self._set_progress(2)
+        self._log("Checking backend dependencies...")
+        self._ensure_pip_deps()
+
+        self._set_progress(4)
+        self._log("Checking frontend dependencies...")
+        self._ensure_npm_deps()
+
         self._set_progress(5)
         self._log("Checking Expo tunnel dependency...")
         self._ensure_ngrok()
@@ -1324,6 +1332,51 @@ class ControlPanel:
 
     def _set_progress(self, val):
         self.root.after(0, lambda: self._progress.config(value=val))
+
+    def _ensure_pip_deps(self):
+        """Install backend pip dependencies using pip directly."""
+        req_file = BASE_DIR / "backend" / "requirements.txt"
+        if not req_file.exists():
+            return
+        # Check if uvicorn already available via pip
+        try:
+            r = subprocess.run(
+                ["cmd", "/c", "pip", "show", "uvicorn"],
+                capture_output=True, timeout=15)
+            if r.returncode == 0:
+                return  # already installed
+        except Exception:
+            pass
+        self._log("Installing backend dependencies (first time, ~2 mins)...", "warn")
+        try:
+            r = subprocess.run(
+                ["cmd", "/c", "pip", "install", "-r", str(req_file)],
+                capture_output=True, text=True, timeout=300)
+            if r.returncode == 0:
+                self._log("Backend dependencies installed.", "success")
+            else:
+                self._log(f"pip install error: {r.stderr[-200:]}", "warn")
+        except Exception as e:
+            self._log(f"pip install warning: {e}", "warn")
+
+    def _ensure_npm_deps(self):
+        """Run npm install in screensense-app if node_modules is missing."""
+        app_dir = BASE_DIR / "screensense-app"
+        modules_dir = app_dir / "node_modules"
+        if modules_dir.exists():
+            return  # already installed
+        self._log("Installing frontend dependencies (first time, ~2 mins)...", "warn")
+        try:
+            r = subprocess.run(
+                ["cmd", "/c", "npm", "install"],
+                cwd=str(app_dir),
+                capture_output=True, text=True, timeout=300)
+            if r.returncode == 0:
+                self._log("Frontend dependencies installed.", "success")
+            else:
+                self._log(f"npm install error: {r.stderr[-200:]}", "warn")
+        except Exception as e:
+            self._log(f"npm install warning: {e}", "warn")
 
     def _ensure_ngrok(self):
         try:
