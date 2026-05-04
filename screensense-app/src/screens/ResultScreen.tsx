@@ -159,15 +159,15 @@ export default function ResultScreen({ result, mood, userId, onReset, onNavigate
               <Text style={[Font.micro, { color: C.textDim, textAlign: 'center' }]}>
                 Uncertainty set:{' '}
                 <Text style={{ fontWeight: '700' }}>{result.prediction_set.join(' or ')}</Text>
-                {'  '}· 90% coverage guarantee · Vovk et al. (2005)
+                {'  '}· 90% coverage guarantee
               </Text>
             </View>
           )}
 
           <Text style={[Font.micro, { color: C.textGhost, letterSpacing: 0.3, marginTop: Space['2'] }]}>
             {result.ensemble_method && result.rf_stress_score != null
-              ? `RF + BiLSTM ensemble · Torous et al. (2017)`
-              : 'Random Forest · Breiman (2001) · scikit-learn'}
+              ? `RF + BiLSTM ensemble`
+              : 'Random Forest · scikit-learn'}
           </Text>
         </View>
       </AnimBlock>
@@ -287,7 +287,7 @@ export default function ResultScreen({ result, mood, userId, onReset, onNavigate
               )}
 
               <Text style={[Font.micro, { color: C.textGhost, marginTop: Space['3'], fontStyle: 'italic' }]}>
-                Lundberg & Lee (2017). SHAP — unified model interpretation. NeurIPS.
+                SHAP values — shows which inputs most influenced this result
               </Text>
             </View>
           </View>

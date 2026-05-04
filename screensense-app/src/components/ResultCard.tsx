@@ -33,7 +33,7 @@ export function StressRing({ score, category }: StressRingProps) {
           <View style={rs.barBg}>
             <Animated.View style={[rs.barFill, { backgroundColor: color, width: anim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) as any }]} />
           </View>
-          <Text style={rs.model}>Random Forest · scikit-learn · Breiman (2001)</Text>
+          <Text style={rs.model}>Random Forest · scikit-learn</Text>
         </View>
       </View>
     </View>

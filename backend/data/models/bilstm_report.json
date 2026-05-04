@@ -1,0 +1,18 @@
+{
+  "model": "BiLSTM Distress Classifier",
+  "architecture": "Embedding(3000,64) \u2192 BiLSTM(128\u00d72, 2L) \u2192 Attention \u2192 FC(64) \u2192 Softmax(5)",
+  "val_accuracy": 1.0,
+  "training_samples": 3000,
+  "classes": [
+    "neutral",
+    "mild_distress",
+    "moderate_distress",
+    "high_distress",
+    "crisis_indicator"
+  ],
+  "citations": [
+    "Schuster & Paliwal (1997). Bidirectional recurrent neural networks. IEEE Trans. Signal Processing.",
+    "Bahdanau et al. (2015). Neural machine translation by jointly learning to align and translate. ICLR.",
+    "Hochreiter & Schmidhuber (1997). Long Short-Term Memory. Neural Computation."
+  ]
+}

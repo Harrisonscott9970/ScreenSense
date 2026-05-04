@@ -99,7 +99,7 @@ export default function SHAPChart({ explanation, stressColor }: SHAPChartProps) 
       {/* Citation */}
       <Text style={s.cite}>
         {explanation.method.includes('SHAP')
-          ? 'Lundberg & Lee (2017). A unified approach to interpreting model predictions. NeurIPS.'
+          ? 'SHAP values — shows which inputs most influenced this prediction'
           : 'Feature importance — install shap package for exact SHAP values'}
       </Text>
     </View>

@@ -419,13 +419,13 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown, diagn
           <SectionHead text="Robustness metrics — chance-corrected &amp; imbalance-immune" />
           <View style={s.statGrid}>
             <StatCard label="Cohen's κ" value={(diagnostics.cohen_kappa ?? '—').toString().slice(0,5)}
-              delta="0=chance · 1=perfect · Landis (1977)" color={CL} />
+              delta="0 = chance, 1 = perfect agreement" color={CL} />
             <StatCard label="MCC"       value={(diagnostics.matthews_cc ?? '—').toString().slice(0,5)}
-              delta="Matthews (1975) — immune to imbalance" color={VL} />
+              delta="robust to class imbalance" color={VL} />
             <StatCard label="F1 CI lo"  value={`${Math.round((diagnostics.f1_bootstrap_ci_lower || 0) * 100)}%`}
-              delta="95% bootstrap CI lower · Efron (1993)" color={G} />
+              delta="95% bootstrap CI lower bound" color={G} />
             <StatCard label="F1 CI hi"  value={`${Math.round((diagnostics.f1_bootstrap_ci_upper || 0) * 100)}%`}
-              delta="95% bootstrap CI upper · n=1000 boot" color={G} />
+              delta="95% bootstrap CI upper bound" color={G} />
           </View>
           <View style={s.statGrid}>
             <StatCard label="Brier score" value={(diagnostics.brier_score_mean ?? '—').toString().slice(0,6)}
@@ -433,9 +433,9 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown, diagn
             <StatCard label="OOB score"   value={diagnostics.oob_score != null ? `${Math.round(diagnostics.oob_score * 100)}%` : '—'}
               delta="out-of-bag — free extra validation" color={CL} />
             <StatCard label="Conf. coverage" value={`${Math.round((diagnostics.conformal_empirical_coverage || 0.9) * 100)}%`}
-              delta="empirical · target 90% · Vovk (2005)" color={G} />
+              delta="empirical coverage · target 90%" color={G} />
             <StatCard label="Avg set size"   value={(diagnostics.conformal_set_avg_size ?? '—').toString().slice(0,4)}
-              delta="LAC prediction set · Angelopoulos (2023)" color={VL} />
+              delta="uncertainty prediction set size" color={VL} />
           </View>
         </>
       )}
@@ -472,9 +472,8 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown, diagn
       <View style={[s.retrainCard, { borderColor: retrainResult ? resClr + '44' : BOR }]}>
         <Text style={s.retrainTitle}>Adapt model to your data</Text>
         <Text style={s.retrainDesc}>
-          Retrains the Random Forest on your real check-ins (weighted 3× over synthetic data),
-          implementing continual learning — Widmer &amp; Kubat (1996). The model is hot-swapped
-          in memory without restarting the server.
+          Retrains the Random Forest on your real check-ins (weighted 3× over synthetic data).
+          The model updates automatically in memory without restarting the server.
         </Text>
         <TouchableOpacity
           style={[s.retrainBtn, retraining && { opacity: 0.6 }]}
@@ -621,7 +620,7 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown, diagn
       <View style={s.bilstmCard}>
         <View style={s.bilstmHeader}>
           <View>
-            <Text style={s.bilstmTitle}>BiLSTM + Bahdanau Attention</Text>
+            <Text style={s.bilstmTitle}>BiLSTM with Attention</Text>
             <Text style={s.bilstmSub}>5-class distress detection from journal text</Text>
           </View>
           {bilstm?.val_accuracy != null && (
@@ -681,19 +680,6 @@ function MLTab({ ml, userId, onRetrained, hist, bilstm, distressBreakdown, diagn
           calibrated ensemble score. This multi-modal fusion improves precision on borderline
           cases where device signals and language signals diverge.
         </Text>
-        <Text style={[s.bilstmEnsembleTxt, { color: VL, marginTop: 6 }]}>
-          Cite: Torous et al. (2017). New tools for new research in psychiatry. JMIR Mental Health.
-        </Text>
-      </View>
-
-      <View style={s.citeCard}>
-        <Text style={s.citeLabel}>Academic citations</Text>
-        <Text style={s.citeTxt}>
-          Breiman, L. (2001). Random Forests. Machine Learning, 45, 5–32.{'\n'}
-          Hutto, C. &amp; Gilbert, E. (2014). VADER: A Parsimonious Rule-based Model for Sentiment Analysis. ICWSM.{'\n'}
-          Lundberg, S. &amp; Lee, S.I. (2017). A unified approach to interpreting model predictions. NeurIPS.{'\n'}
-          Widmer, G. &amp; Kubat, M. (1996). Learning in the presence of concept drift. Machine Learning, 23(1).
-        </Text>
       </View>
     </>
   );
@@ -706,9 +692,11 @@ function F1Curve({ history }: { history: any[] }) {
   const pts = history.slice(-10);   // last 10 retrain events
   if (pts.length < 2) return null;
 
-  const f1s  = pts.map((h: any) => h.new_f1_weighted || 0);
-  const minF  = Math.min(...f1s) - 0.02;
-  const maxF  = Math.max(...f1s) + 0.02;
+  // Filter out zero/undefined values before scaling so a bad entry can't blow the axis
+  const f1s  = pts.map((h: any) => h.new_f1_weighted || 0).filter((v: number) => v > 0);
+  if (f1s.length < 2) return null;
+  const minF  = Math.max(0,   Math.min(...f1s) - 0.03);
+  const maxF  = Math.min(1.0, Math.max(...f1s) + 0.03);
   const range = maxF - minF || 0.01;
 
   const fmtDate = (iso: string) => {
@@ -747,12 +735,15 @@ function F1Curve({ history }: { history: any[] }) {
       ))}
       {/* Dots with connecting labels */}
       {pts.map((h: any, i: number) => {
+        const f1val = h.new_f1_weighted || 0;
         const x = (i / (pts.length - 1)) * (W - 80);
-        const y = H - ((h.new_f1_weighted - minF) / range) * H;
+        // Clamp y so dots never escape the chart area
+        const rawY = H - ((f1val - minF) / range) * H;
+        const y = Math.max(0, Math.min(H - 4, rawY));
         const col = h.status === 'retrained' ? G : A;
         return (
           <View key={i} style={[s.curveDot, { left: x + 34, top: y + 12, backgroundColor: col }]}>
-            <Text style={s.curveDotTxt}>{Math.round((h.new_f1_weighted||0)*100)}</Text>
+            <Text style={s.curveDotTxt}>{Math.round(f1val * 100)}</Text>
           </View>
         );
       })}
@@ -846,7 +837,7 @@ function LearningCurveBySize({ lc }: { lc: any }) {
   const maxF   = Math.min(1, Math.max(...allF1s) + 0.03);
   const range  = maxF - minF || 0.01;
 
-  const yAt = (f1: number) => H - ((f1 - minF) / range) * H;
+  const yAt = (f1: number) => Math.max(0, Math.min(H - 4, H - ((f1 - minF) / range) * H));
   const xAt = (i: number)  => (i / (pts - 1)) * (W - 90);
 
   return (

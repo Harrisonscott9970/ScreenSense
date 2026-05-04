@@ -13,7 +13,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from collections import Counter
-import csv, io, json, random
+import csv, io, json, random, logging
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 
 import numpy as np
@@ -88,34 +90,142 @@ def _page_hinkley(values: list, delta: float = 0.008, threshold: float = 0.12) -
     }
 
 # ── Optional model imports (graceful fallback) ─────────────────
+# ImportError covers missing packages; Exception covers weight-file errors at load time.
 try:
     from app.ml.lstm_model import predict_next_mood
     LSTM_AVAILABLE = True
-except Exception:
+except (ImportError, Exception) as _e:
     LSTM_AVAILABLE = False
+    logger.warning("LSTM unavailable: %s", _e)
     def predict_next_mood(_): return None
 
 try:
     from app.ml.bilstm_distress import classify_distress
     BILSTM_AVAILABLE = True
-except Exception:
+except (ImportError, Exception) as _e:
     BILSTM_AVAILABLE = False
+    logger.warning("BiLSTM unavailable: %s", _e)
     def classify_distress(text):
         return {'class': 'neutral', 'confidence': 0.5, 'model': 'fallback', 'is_crisis': False}
 
 try:
     from app.ml.counterfactual import compute_counterfactual
     COUNTERFACTUAL_AVAILABLE = True
-except Exception:
+except (ImportError, Exception) as _e:
     COUNTERFACTUAL_AVAILABLE = False
+    logger.warning("Counterfactual unavailable: %s", _e)
     def compute_counterfactual(fv, **kw): return None
 
 try:
     from app.ml.anomaly_detector import compute_anomaly
     ANOMALY_AVAILABLE = True
-except Exception:
+except (ImportError, Exception) as _e:
     ANOMALY_AVAILABLE = False
+    logger.warning("Anomaly detector unavailable: %s", _e)
     def compute_anomaly(fv, entries, score, cat): return None
+
+
+# ══════════════════════════════════════════════════════════════════
+# Shared retraining helpers — used by both /api/ml/retrain (manual)
+# and _background_retrain (auto-triggered every 20 check-ins).
+# Extracting these removes ~80 lines of duplication and ensures both
+# paths use identical feature engineering, following DRY principles.
+# ══════════════════════════════════════════════════════════════════
+
+# Mood-to-valence mapping (Russell, 1980 — circumplex affect model)
+_MOOD_VALENCE: dict = {
+    'anxious': -0.70, 'stressed': -0.60, 'low': -0.80,
+    'numb': -0.40,    'calm':  0.60,     'content': 0.70,
+    'energised': 0.50, 'joyful': 0.90,
+}
+
+
+def _entries_to_dataframe(entries: list) -> "pd.DataFrame":
+    """
+    Convert a list of MoodEntry ORM objects into a DataFrame of the 14
+    training features used by the Random Forest classifier.
+
+    Cyclical time encodings follow Waskom (2018); the screen × sleep
+    interaction term is grounded in Levenson et al. (2017).
+    """
+    import numpy as _np
+    import pandas as _pd
+    rows = []
+    for e in entries:
+        hour = float(e.hour_of_day or 12)
+        day  = float(e.day_of_week or 0)
+        scr  = float(e.screen_time_hours or 4.0)
+        slp  = float(e.sleep_hours or 7.0)
+        rows.append({
+            'screen_time_hours':        scr,
+            'sleep_hours':              slp,
+            'energy_level':             float(e.energy_level or 5),
+            'hour_of_day':              hour,
+            'day_of_week':              day,
+            'scroll_session_mins':      float(e.scroll_session_mins or 15),
+            'heart_rate_resting':       float(e.heart_rate_resting or 68.0),
+            'mood_valence':             float(_MOOD_VALENCE.get(e.mood_label or 'calm', 0.0)),
+            'hour_sin':                 float(_np.sin(2 * _np.pi * hour / 24)),
+            'hour_cos':                 float(_np.cos(2 * _np.pi * hour / 24)),
+            'day_sin':                  float(_np.sin(2 * _np.pi * day / 7)),
+            'day_cos':                  float(_np.cos(2 * _np.pi * day / 7)),
+            'screen_sleep_interaction': float(
+                max(0.0, (scr / 10.0) * max(0.0, (8 - slp) / 8.0)) * 0.15
+            ),
+            'weather_temp_c':           float(e.weather_temp_c or 15.0),
+            'stress_label':             e.stress_category,
+        })
+    return _pd.DataFrame(rows)
+
+
+def _build_combined_df(real_df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Merge real user entries with the synthetic training set.
+    Real data is weighted 3× (concatenated three times) to prioritise
+    actual user patterns over the synthetic baseline — Widmer & Kubat (1996).
+    """
+    import pandas as _pd
+    syn_path = Path(__file__).parent.parent.parent / "data" / "synthetic_training.csv"
+    if syn_path.exists():
+        return _pd.concat(
+            [_pd.read_csv(syn_path), real_df, real_df, real_df],
+            ignore_index=True,
+        )
+    return real_df
+
+
+def _build_rf_pipeline(saved_params: dict):
+    """
+    Reconstruct the Random Forest pipeline from the hyperparameters saved
+    by the initial RandomizedSearchCV run in train.py.  Reusing best_params
+    prevents regression to weaker fixed hyperparameters across retrain cycles
+    (Widmer & Kubat, 1996; catastrophic forgetting mitigation).
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import Pipeline
+
+    n_est  = int(saved_params.get("n_estimators", 300))
+    depth  = saved_params.get("max_depth")
+    depth  = None if str(depth) == "None" else (int(depth) if depth else 12)
+    max_ft = saved_params.get("max_features", "sqrt")
+    if str(max_ft) == "None":
+        max_ft = None
+
+    return Pipeline([
+        ('scaler', StandardScaler()),
+        ('clf', RandomForestClassifier(
+            n_estimators=n_est,
+            max_depth=depth,
+            min_samples_split=int(saved_params.get("min_samples_split", 4)),
+            min_samples_leaf=int(saved_params.get("min_samples_leaf", 2)),
+            max_features=max_ft,
+            class_weight='balanced',
+            random_state=42,
+            n_jobs=-1,
+            oob_score=True,
+        )),
+    ])
 
 
 # ── CHECKIN ────────────────────────────────────────────────────
@@ -365,8 +475,8 @@ async def checkin(req: CheckInRequest, db: Session = Depends(get_db)):
         import asyncio as _asyncio
         try:
             _asyncio.get_event_loop().create_task(_background_retrain(req.user_id))
-        except Exception:
-            pass
+        except RuntimeError as _e:
+            logger.warning("Background retrain scheduling failed: %s", _e)
 
     return {
         "entry_id":              entry.id,
@@ -698,20 +808,65 @@ async def weekly_report(user_id: str, db: Session = Depends(get_db)):
         best_day=best_day, worst_day=worst_day,
     )
 
+    # Mood frequency breakdown for the week
+    mood_counts = dict(Counter(moods))
+
+    # Sleep trend — split into halves same way as stress
+    sleep_vals = [e.sleep_hours for e in entries]
+    if len(sleep_vals) >= 4:
+        mid = len(sleep_vals) // 2
+        sleep_trend = (
+            "improving" if sum(sleep_vals[mid:]) / (len(sleep_vals) - mid) >
+                           sum(sleep_vals[:mid]) / mid + 0.2
+            else "worsening" if sum(sleep_vals[mid:]) / (len(sleep_vals) - mid) <
+                                sum(sleep_vals[:mid]) / mid - 0.2
+            else "stable"
+        )
+    else:
+        sleep_trend = "insufficient data"
+
+    # Screen time vs stress correlation (simple: is high screen associated with high stress?)
+    screen_vals = [e.screen_time_hours for e in entries]
+    if len(screen_vals) >= 4:
+        avg_scr = sum(screen_vals) / len(screen_vals)
+        high_screen_stress = [s for sc, s in zip(screen_vals, stress_scores) if sc >= avg_scr]
+        low_screen_stress  = [s for sc, s in zip(screen_vals, stress_scores) if sc < avg_scr]
+        if high_screen_stress and low_screen_stress:
+            scr_stress_delta = round(
+                sum(high_screen_stress) / len(high_screen_stress) -
+                sum(low_screen_stress)  / len(low_screen_stress), 3
+            )
+        else:
+            scr_stress_delta = None
+    else:
+        scr_stress_delta = None
+
+    # Top recommendation category this week (most common nudge type)
+    # Falls back gracefully if nudge_type not stored
+    nudge_types = [getattr(e, 'nudge_type', None) for e in entries if getattr(e, 'nudge_type', None)]
+    top_nudge = Counter(nudge_types).most_common(1)[0][0] if nudge_types else None
+
     return {
         "user_id":          user_id,
         "week_of":          week_ago.strftime("%Y-%m-%d"),
         "total_checkins":   len(entries),
         "avg_stress_score": avg_stress,
         "stress_trend":     trend,
+        "sleep_trend":      sleep_trend,
         "top_mood":         top_mood,
+        "mood_counts":      mood_counts,
         "avg_sleep_hours":  avg_sleep,
         "avg_screen_time":  avg_screen,
+        "screen_stress_delta": scr_stress_delta,
+        "top_nudge_category":  top_nudge,
         "best_day":  {"date": best_day.created_at.strftime("%Y-%m-%d"),  "score": best_day.predicted_stress_score,  "mood": best_day.mood_label},
         "worst_day": {"date": worst_day.created_at.strftime("%Y-%m-%d"), "score": worst_day.predicted_stress_score, "mood": worst_day.mood_label},
         "daily_scores": [
             {"date": e.created_at.strftime("%Y-%m-%d"),
-             "stress": e.predicted_stress_score, "mood": e.mood_label}
+             "stress": e.predicted_stress_score,
+             "sleep":  e.sleep_hours,
+             "screen": e.screen_time_hours,
+             "mood":   e.mood_label}
             for e in entries
         ],
         "narrative":    narrative,
@@ -822,6 +977,7 @@ async def ml_diagnostics():
         "conformal_q_hat":               report.get("conformal_q_hat"),
         "conformal_empirical_coverage":  report.get("conformal_empirical_coverage"),
         "oob_score":                     report.get("oob_score"),
+        "f1_weighted":                   report.get("f1_weighted"),
         "split_method":                  report.get("split_method"),
         "calibration_samples":           report.get("calibration_samples"),
         "test_samples":                  report.get("test_samples"),
@@ -851,12 +1007,8 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
         drift and hidden contexts. Machine Learning, 23(1), 69-101.
     """
     import pandas as pd
-    import numpy as np
     import joblib
     import asyncio
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.pipeline import Pipeline
     from sklearn.model_selection import cross_val_score, StratifiedKFold
     from sklearn.metrics import f1_score, accuracy_score
     from app.ml.inference import load_model, load_eval_report, FEATURES
@@ -876,51 +1028,12 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
             "entries_available": len(entries),
         }
 
-    # ── 2. Build real-data DataFrame (all 14 features) ───────────────
-    MOOD_VALENCE = {'anxious': -0.70, 'stressed': -0.60, 'low': -0.80,
-                    'numb': -0.40, 'calm': 0.60, 'content': 0.70,
-                    'energised': 0.50, 'joyful': 0.90}
-    rows = []
-    for e in entries:
-        hour = float(e.hour_of_day or 12)
-        day  = float(e.day_of_week or 0)
-        scr  = float(e.screen_time_hours or 4.0)
-        slp  = float(e.sleep_hours or 7.0)
-        # Cyclical encodings (Waskom, 2018)
-        hour_sin = float(np.sin(2 * np.pi * hour / 24))
-        hour_cos = float(np.cos(2 * np.pi * hour / 24))
-        day_sin  = float(np.sin(2 * np.pi * day / 7))
-        day_cos  = float(np.cos(2 * np.pi * day / 7))
-        # Screen × sleep interaction (Levenson et al., 2017)
-        interaction = float(max(0.0, (scr / 10.0) * max(0.0, (8 - slp) / 8.0)) * 0.15)
-        rows.append({
-            'screen_time_hours':       scr,
-            'sleep_hours':             slp,
-            'energy_level':            float(e.energy_level or 5),
-            'hour_of_day':             hour,
-            'day_of_week':             day,
-            'scroll_session_mins':     float(e.scroll_session_mins or 15),
-            'heart_rate_resting':      float(e.heart_rate_resting or 68.0),
-            'mood_valence':            float(MOOD_VALENCE.get(e.mood_label or 'calm', 0.0)),
-            'hour_sin':                hour_sin,
-            'hour_cos':                hour_cos,
-            'day_sin':                 day_sin,
-            'day_cos':                 day_cos,
-            'screen_sleep_interaction': interaction,
-            'weather_temp_c':          float(e.weather_temp_c or 15.0),
-            'stress_label':            e.stress_category,
-        })
-    real_df = pd.DataFrame(rows)
-
-    # ── 3. Merge with synthetic data for robustness ───────────────────
-    MODEL_DIR = Path(__file__).parent.parent.parent / "data" / "models"
-    syn_path  = Path(__file__).parent.parent.parent / "data" / "synthetic_training.csv"
-    if syn_path.exists():
-        syn_df = pd.read_csv(syn_path)
-        # Real data weighted 3× to prioritise actual user patterns
-        combined_df = pd.concat([syn_df, real_df, real_df, real_df], ignore_index=True)
-    else:
-        combined_df = real_df
+    # ── 2 & 3. Build feature DataFrame and merge with synthetic baseline ──
+    # Shared helpers above keep feature engineering consistent between the
+    # manual retrain endpoint and the auto background retrain (DRY principle).
+    real_df     = _entries_to_dataframe(entries)
+    combined_df = _build_combined_df(real_df)
+    MODEL_DIR   = Path(__file__).parent.parent.parent / "data" / "models"
 
     X = combined_df[FEATURES]
     y = combined_df['stress_label']
@@ -930,29 +1043,9 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
 
     # ── 4. Retrain — reuse best hyperparams from initial training ────
     # Loading best_params from eval_report ensures we don't regress to
-    # weaker fixed hyperparameters on each retrain cycle. This directly
-    # addresses the catastrophic forgetting / F1 degradation pattern
-    # observed in control panel learning curves (Widmer & Kubat, 1996).
-    old_report  = load_eval_report()
-    saved_params = old_report.get("best_params", {})
-    # Map param names back (best_params stored without 'clf__' prefix)
-    n_est   = int(saved_params.get("n_estimators", 300))
-    depth   = saved_params.get("max_depth")
-    depth   = None if str(depth) == "None" else int(depth) if depth else 12
-    min_spl = int(saved_params.get("min_samples_split", 4))
-    min_lf  = int(saved_params.get("min_samples_leaf", 2))
-    max_ft  = saved_params.get("max_features", "sqrt")
-    if str(max_ft) == "None": max_ft = None
-
-    pipeline = Pipeline([
-        ('scaler', StandardScaler()),
-        ('clf', RandomForestClassifier(
-            n_estimators=n_est, max_depth=depth,
-            min_samples_split=min_spl, min_samples_leaf=min_lf,
-            max_features=max_ft,
-            class_weight='balanced', random_state=42, n_jobs=-1, oob_score=True,
-        ))
-    ])
+    # weaker fixed hyperparameters on each retrain cycle (Widmer & Kubat, 1996).
+    old_report   = load_eval_report()
+    pipeline     = _build_rf_pipeline(old_report.get("best_params", {}))
 
     # Run in thread pool (CPU-bound)
     loop = asyncio.get_event_loop()
@@ -983,7 +1076,11 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
 
     if improved:
         joblib.dump(pipeline, MODEL_DIR / "stress_classifier.joblib")
+        # Merge into existing report so train.py's rich metrics are preserved:
+        # cohen_kappa, matthews_cc, oob_score, bootstrap CI, etc. must not be
+        # overwritten by a continual-learning update (Widmer & Kubat, 1996).
         eval_report = {
+            **old_report,                       # keep all train.py fields intact
             "accuracy":       new_acc,
             "f1_weighted":    new_f1,
             "cv_f1_mean":     cv_mean,
@@ -1029,8 +1126,8 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
         existing = json.loads(history_path.read_text()) if history_path.exists() else []
         existing.append(history_entry)
         history_path.write_text(json.dumps(existing[-50:], indent=2))  # keep last 50
-    except Exception:
-        pass
+    except (OSError, ValueError, json.JSONDecodeError) as _e:
+        logger.warning("Could not write retrain history: %s", _e)
 
     return {
         "status":           "retrained" if improved else "no_improvement",
@@ -1043,11 +1140,6 @@ async def retrain_models(data: dict, db: Session = Depends(get_db)):
         "cv_f1_std":        cv_std,
         "improved":         improved,
         "feature_importances": feature_importances_new,
-        "academic_note":    (
-            "Continual learning via periodic refit — Widmer & Kubat (1996). "
-            "Real data weighted 3× synthetic. Best hyperparams from initial "
-            "RandomizedSearchCV preserved across retrains to prevent regression."
-        ),
     }
 
 
@@ -1095,7 +1187,8 @@ async def ml_retrain_history():
     try:
         history = json.loads(history_path.read_text())
         return {"history": history, "count": len(history)}
-    except Exception:
+    except (OSError, json.JSONDecodeError) as _e:
+        logger.warning("Could not read retrain history: %s", _e)
         return {"history": [], "count": 0}
 
 
@@ -1488,107 +1581,76 @@ async def _background_retrain(user_id: str):
     Lightweight background retrain triggered every 20 check-ins.
     Implements continual learning (Widmer & Kubat, 1996) without
     blocking the check-in response.
+
+    Uses the shared helpers _entries_to_dataframe, _build_combined_df, and
+    _build_rf_pipeline to avoid duplicating feature engineering logic that
+    already lives in the /api/ml/retrain endpoint.
     """
     try:
         import asyncio
-        import pandas as pd
         import joblib as _joblib
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.pipeline import Pipeline as _Pipeline
         from sklearn.metrics import f1_score as _f1
         from app.ml.inference import load_model, load_eval_report, FEATURES
         from app.models.database import SessionLocal
 
         db_bg = SessionLocal()
         try:
-            MOOD_V = {'anxious': -0.70, 'stressed': -0.60, 'low': -0.80,
-                      'numb': -0.40, 'calm': 0.60, 'content': 0.70,
-                      'energised': 0.50, 'joyful': 0.90}
             entries = db_bg.query(MoodEntry).filter(MoodEntry.stress_category.isnot(None)).all()
             if len(entries) < 10:
                 return
-            import numpy as _np
-            rows = []
-            for e in entries:
-                _hour = float(e.hour_of_day or 12)
-                _day  = float(e.day_of_week or 0)
-                _scr  = float(e.screen_time_hours or 4)
-                _slp  = float(e.sleep_hours or 7)
-                rows.append({
-                    'screen_time_hours':        _scr,
-                    'sleep_hours':              _slp,
-                    'energy_level':             float(e.energy_level or 5),
-                    'hour_of_day':              _hour,
-                    'day_of_week':              _day,
-                    'scroll_session_mins':      float(e.scroll_session_mins or 15),
-                    'heart_rate_resting':       float(e.heart_rate_resting or 68),
-                    'mood_valence':             float(MOOD_V.get(e.mood_label or 'calm', 0)),
-                    'hour_sin':                 float(_np.sin(2 * _np.pi * _hour / 24)),
-                    'hour_cos':                 float(_np.cos(2 * _np.pi * _hour / 24)),
-                    'day_sin':                  float(_np.sin(2 * _np.pi * _day / 7)),
-                    'day_cos':                  float(_np.cos(2 * _np.pi * _day / 7)),
-                    'screen_sleep_interaction': float(max(0.0, (_scr / 10.0) * max(0.0, (8 - _slp) / 8.0)) * 0.15),
-                    'weather_temp_c':           float(e.weather_temp_c or 15.0),
-                    'stress_label':             e.stress_category,
-                })
-            real_df = pd.DataFrame(rows)
-            syn_path = Path(__file__).parent.parent.parent / "data" / "synthetic_training.csv"
-            combined = pd.concat([pd.read_csv(syn_path), real_df, real_df, real_df], ignore_index=True) if syn_path.exists() else real_df
-            X, y = combined[FEATURES], combined['stress_label']
+
+            # Reuse shared helpers — same feature engineering as the manual retrain
+            real_df  = _entries_to_dataframe(entries)
+            combined = _build_combined_df(real_df)
+            X, y     = combined[FEATURES], combined['stress_label']
+
             if y.nunique() < 2:
                 return
-            # Reuse best hyperparams from initial training (prevents regression)
-            _old_report = load_eval_report()
-            _sp = _old_report.get("best_params", {})
-            _n_est = int(_sp.get("n_estimators", 300))
-            _depth = _sp.get("max_depth"); _depth = None if str(_depth) == "None" else (int(_depth) if _depth else 12)
-            pipeline = _Pipeline([
-                ('scaler', StandardScaler()),
-                ('clf', RandomForestClassifier(
-                    n_estimators=_n_est, max_depth=_depth,
-                    min_samples_split=int(_sp.get("min_samples_split", 4)),
-                    min_samples_leaf=int(_sp.get("min_samples_leaf", 2)),
-                    max_features=_sp.get("max_features", "sqrt") if str(_sp.get("max_features", "sqrt")) != "None" else None,
-                    class_weight='balanced', random_state=42, n_jobs=-1
-                ))
-            ])
+
+            old_report = load_eval_report()
+            pipeline   = _build_rf_pipeline(old_report.get("best_params", {}))
+
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, pipeline.fit, X, y)
-            y_pred = await loop.run_in_executor(None, pipeline.predict, X)
-            new_f1 = round(float(_f1(y, y_pred, average='weighted')), 4)
-            old_cv_f1 = _old_report.get('cv_f1_mean', _old_report.get('f1_weighted', 0.0))
+            y_pred    = await loop.run_in_executor(None, pipeline.predict, X)
+            new_f1    = round(float(_f1(y, y_pred, average='weighted')), 4)
+            old_cv_f1 = old_report.get('cv_f1_mean', old_report.get('f1_weighted', 0.0))
+
             if new_f1 >= old_cv_f1 - 0.03:
                 _mdir = Path(__file__).parent.parent.parent / "data" / "models"
                 _joblib.dump(pipeline, _mdir / "stress_classifier.joblib")
                 load_model.cache_clear()
                 load_eval_report.cache_clear()
-                # Append to history
+
                 _hist_path = _mdir / "retrain_history.json"
                 _entry = {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status": "retrained",
-                    "real_entries_used": len(rows),
-                    "total_samples": len(combined),
-                    "new_f1_weighted": new_f1,
-                    "old_cv_f1": old_cv_f1,
-                    "cv_f1_mean": new_f1,
-                    "cv_f1_std": 0.0,
-                    "improved": True,
-                    "top_feature": max(dict(zip(FEATURES, pipeline.named_steps['clf'].feature_importances_)).items(), key=lambda x: x[1])[0],
-                    "user_id": user_id,
-                    "trigger": "auto_20_checkins",
+                    "timestamp":         datetime.utcnow().isoformat(),
+                    "status":            "retrained",
+                    "real_entries_used": len(entries),
+                    "total_samples":     len(combined),
+                    "new_f1_weighted":   new_f1,
+                    "old_cv_f1":         old_cv_f1,
+                    "cv_f1_mean":        new_f1,
+                    "cv_f1_std":         0.0,
+                    "improved":          True,
+                    "top_feature":       max(
+                        zip(FEATURES, pipeline.named_steps['clf'].feature_importances_),
+                        key=lambda x: x[1]
+                    )[0],
+                    "user_id":  user_id,
+                    "trigger":  "auto_20_checkins",
                 }
                 try:
                     existing = json.loads(_hist_path.read_text()) if _hist_path.exists() else []
                     existing.append(_entry)
                     _hist_path.write_text(json.dumps(existing[-50:], indent=2))
-                except Exception:
-                    pass
+                except (OSError, ValueError, json.JSONDecodeError) as _e:
+                    logger.warning("Background retrain: could not write history: %s", _e)
         finally:
             db_bg.close()
-    except Exception:
-        pass  # Never crash the main checkin response
+    except Exception as _e:
+        # Broad catch intentional — background task must never crash the check-in response
+        logger.error("Background retrain failed silently: %s", _e)
 
 
 # ── Helpers ────────────────────────────────────────────────────

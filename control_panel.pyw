@@ -114,31 +114,51 @@ class LineChart(tk.Canvas):
         self.delete("all")
         w = self.winfo_width() or 300
         h = self.winfo_height() or 130
-        pad_l, pad_r, pad_t, pad_b = 38, 10, 10, 22
+        pad_l, pad_r, pad_t, pad_b = 44, 12, 12, 24
         self.create_line(pad_l, pad_t, pad_l, h-pad_b, fill=BDR, width=1)
         self.create_line(pad_l, h-pad_b, w-pad_r, h-pad_b, fill=BDR, width=1)
 
-        def _series(data, color, label):
-            if len(data) < 2: return
-            mn, mx = min(data), max(data)
-            rng = mx-mn if mx != mn else 0.001
-            n   = len(data)
-            W   = w - pad_l - pad_r
-            H   = h - pad_t - pad_b
-            xs  = [pad_l + i/(n-1)*W for i in range(n)]
-            ys  = [(h-pad_b) - (v-mn)/rng*H for v in data]
-            pts = []
-            for x,y in zip(xs,ys): pts += [x,y]
-            self.create_line(*pts, fill=color, width=2, smooth=True)
-            for x,y in zip(xs,ys):
-                self.create_oval(x-3,y-3,x+3,y+3, fill=color, outline=color)
-            for v in [mn, (mn+mx)/2, mx]:
-                yp = (h-pad_b) - (v-mn)/rng*H
-                self.create_text(pad_l-4, yp, text=f"{v:.3f}",
-                                 fill=SUB, font=(FC,7), anchor="e")
+        # Build a SHARED y-axis from both series so lines never escape the canvas
+        all_vals = [v for v in (self._s1 + self._s2) if v is not None and v > 0]
+        if not all_vals:
+            return
+        mn  = min(all_vals)
+        mx  = max(all_vals)
+        rng = mx - mn if mx != mn else 0.01
+        # Pad 10% so dots at extremes are never clipped
+        mn  -= rng * 0.10
+        mx  += rng * 0.10
+        rng  = mx - mn
 
-        _series(self._s1, VIO, "New F1")
-        _series(self._s2, BLU, "Old F1")
+        W = w - pad_l - pad_r
+        H = h - pad_t - pad_b
+
+        # Draw 3 y-axis grid lines and labels
+        for v in [mn, (mn+mx)/2, mx]:
+            yp = (h-pad_b) - (v-mn)/rng*H
+            yp = max(pad_t, min(h-pad_b, yp))   # clamp to canvas
+            self.create_line(pad_l, yp, w-pad_r, yp, fill=BDR, dash=(2,4))
+            self.create_text(pad_l-4, yp, text=f"{v:.2f}",
+                             fill=SUB, font=(FC,7), anchor="e")
+
+        def _series(data, color):
+            clean = [v for v in data if v is not None and v > 0]
+            if len(clean) < 2:
+                return
+            n  = len(clean)
+            xs = [pad_l + i/(n-1)*W for i in range(n)]
+            ys = [(h-pad_b) - (v-mn)/rng*H for v in clean]
+            # Clamp every y to within the plot area
+            ys = [max(pad_t, min(h-pad_b, y)) for y in ys]
+            pts = []
+            for x, y in zip(xs, ys):
+                pts += [x, y]
+            self.create_line(*pts, fill=color, width=2, smooth=True)
+            for x, y in zip(xs, ys):
+                self.create_oval(x-3, y-3, x+3, y+3, fill=color, outline=color)
+
+        _series(self._s1, VIO)
+        _series(self._s2, BLU)
 
         self.create_rectangle(w-90, pad_t, w-pad_r, pad_t+28, fill=CARD, outline=BDR)
         self.create_line(w-86, pad_t+9,  w-72, pad_t+9,  fill=VIO, width=2)
@@ -291,9 +311,6 @@ class ControlPanel:
         tk.Label(bar, text="Control Panel", fg=MUT, bg="#080e1a",
                  font=(F,12)).pack(side=tk.LEFT, pady=12)
 
-        self._clock_lbl = tk.Label(bar, text="", fg=SUB, bg="#080e1a", font=(FC,10))
-        self._clock_lbl.pack(side=tk.RIGHT, padx=14)
-
         self._global_lbl = tk.Label(bar, text="Services Offline", fg=MUT,
                                     bg="#080e1a", font=(F,10))
         self._global_lbl.pack(side=tk.RIGHT, padx=(0,4))
@@ -302,11 +319,6 @@ class ControlPanel:
                                      highlightthickness=0)
         self._global_dot.pack(side=tk.RIGHT, padx=(12,0), pady=19)
         self._global_dot.create_oval(1,1,9,9, fill=SUB, outline=SUB, tags="dot")
-        self._update_clock()
-
-    def _update_clock(self):
-        self._clock_lbl.config(text=time.strftime("%H:%M:%S"))
-        self.root.after(1000, self._update_clock)
 
     # ══════════════════════════════════════════════════════════════════════
     # LEFT panel
@@ -535,12 +547,12 @@ class ControlPanel:
         for i in range(6): tiles.columnconfigure(i, weight=1)
 
         metrics = [
-            ("RF Accuracy", "77.5%",   VIO, "rf_acc"),
-            ("RF F1 Score", "0.774",   BLU, "rf_f1"),
-            ("LSTM MSE",    "0.438",   YLW, "lstm_mse"),
-            ("BiLSTM",      "5-class", GRN, "bilstm"),
-            ("Retrains",    "-",       VIO, "retrain_n"),
-            ("Entries",     "-",       BLU, "entry_n"),
+            ("CV F1 wtd",        "81.5%",  VIO, "rf_cv_f1"),
+            ("Test F1 wtd",      "79.8%",  BLU, "rf_f1"),
+            ("OOB Score",        "81.4%",  GRN, "rf_oob"),
+            ("Cohen's κ",        "0.679",  YLW, "rf_kappa"),
+            ("Retrains",         "-",      VIO, "retrain_n"),
+            ("Entries",          "-",      BLU, "entry_n"),
         ]
         self._metric_vars = {}
         for i, (title, val, col, key) in enumerate(metrics):
@@ -1186,13 +1198,36 @@ class ControlPanel:
 
         try:
             d = self._api_get("/api/ml/evaluate")
-            if d.get("accuracy"):
-                self._metric_vars["rf_acc"].config(
-                    text=f"{d['accuracy']*100:.1f}%")
             fi = d.get("feature_importances")
             if fi:
                 fi_pct = {k: round(v*100,1) for k,v in fi.items()}
                 self._shap_chart.set_data(fi_pct)
+            # Update CV F1 tile with mean ± std if available
+            cv_mean = d.get("cv_f1_mean")
+            cv_std  = d.get("cv_f1_std")
+            if cv_mean is not None:
+                if cv_std is not None:
+                    self._metric_vars["rf_cv_f1"].config(
+                        text=f"{cv_mean*100:.1f}% ±{cv_std*100:.1f}%")
+                else:
+                    self._metric_vars["rf_cv_f1"].config(
+                        text=f"{cv_mean*100:.1f}%")
+        except Exception: pass
+
+        try:
+            diag = self._api_get("/api/ml/diagnostics")
+            # Test F1 (weighted)
+            f1 = diag.get("f1_weighted")
+            if f1 is not None:
+                self._metric_vars["rf_f1"].config(text=f"{f1*100:.1f}%")
+            # OOB Score
+            oob = diag.get("oob_score")
+            if oob is not None:
+                self._metric_vars["rf_oob"].config(text=f"{oob*100:.1f}%")
+            # Cohen's κ
+            kappa = diag.get("cohen_kappa")
+            if kappa is not None:
+                self._metric_vars["rf_kappa"].config(text=f"{kappa:.3f}")
         except Exception: pass
 
         try:

@@ -33,7 +33,7 @@ const SLIDES = [
     color: C,
     title: 'Powered by\nreal machine learning',
     sub: 'A trained Random Forest classifier and LSTM neural network analyse your mood, screen time, sleep, and location in real time.',
-    badge: 'Breiman (2001) · Hochreiter (1997)',
+    badge: 'Random Forest · LSTM · BiLSTM',
   },
   {
     icon: '📍',

@@ -8,10 +8,14 @@ __pycache__/
 venv/
 .venv/
 
-# Database and models (large files)
+# Database (user data, not committed)
 backend/data/screensense.db
-backend/data/models/
-backend/data/synthetic_training.csv
+
+# (demo credentials file is intentionally included for marker access)
+
+# Uncalibrated RF model — too large for GitHub (64 MB); regenerate with:
+#   python -m app.ml.train
+backend/data/models/stress_classifier_uncalibrated.joblib
 
 # Node
 node_modules/
