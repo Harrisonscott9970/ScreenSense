@@ -1398,23 +1398,32 @@ class ControlPanel:
     def _ensure_npm_deps(self):
         """Run npm install in screensense-app to ensure all packages are present."""
         app_dir = os.path.join(BASE, "screensense-app")
-        # Check for expo specifically, not just node_modules folder
         expo_check = os.path.join(app_dir, "node_modules", "expo", "package.json")
         if os.path.exists(expo_check):
             return
-        self._log("Installing frontend dependencies (first run only, ~2 mins)...", "warn")
+        self._log("Installing frontend dependencies (~2 mins)...", "warn")
         try:
+            # Use npm ci if package-lock.json exists for clean install, else npm install
+            lock = os.path.join(app_dir, "package-lock.json")
+            cmd = ["npm", "ci"] if os.path.exists(lock) else ["npm", "install"]
             proc = subprocess.Popen(
-                ["cmd", "/c", "npm", "install"],
+                ["cmd", "/c"] + cmd,
                 cwd=app_dir,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1)
             for line in iter(proc.stdout.readline, ""):
                 line = line.strip()
-                if line and "warn" not in line.lower() and "npm" not in line.lower()[:4]:
+                if line and "warn" not in line.lower():
                     self._log(f"[npm] {line}", "warn")
             proc.wait()
-            self._log("Frontend dependencies installed.", "success")
+            # Verify expo actually installed
+            if os.path.exists(expo_check):
+                self._log("Frontend dependencies installed.", "success")
+            else:
+                self._log("Running npm install as fallback...", "warn")
+                subprocess.run(["cmd", "/c", "npm", "install"],
+                               cwd=app_dir, timeout=300)
+                self._log("Frontend dependencies installed.", "success")
         except Exception as e:
             self._log(f"npm install warning: {e}", "warn")
 
