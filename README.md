@@ -25,7 +25,7 @@ Before running ScreenSense, make sure the following are installed:
 
 | Tool | Version | Download |
 |------|---------|----------|
-| Python | 3.11 | https://www.python.org/downloads/ |
+| Python | 3.11 | https://www.python.org/downloads/release/python-3119/ |
 | Node.js | 18+ | https://nodejs.org/ |
 | Expo Go (phone) | Latest | App Store / Google Play |
 
