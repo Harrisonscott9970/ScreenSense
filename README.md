@@ -26,6 +26,8 @@ Four pre-made test accounts are available to log in and explore the app immediat
 | user3@test.com  | ScreenSense3!  |
 | user4@test.com  | ScreenSense4!  |
 
+<img width="1917" height="1038" alt="image" src="https://github.com/user-attachments/assets/5b95709d-11e8-48ef-9a93-37bd05922ffb" />
+
 ---
 
 ## 1. Project Overview
