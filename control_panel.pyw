@@ -1334,39 +1334,84 @@ class ControlPanel:
         self.root.after(0, lambda: self._progress.config(value=val))
 
     def _ensure_pip_deps(self):
-        """Install backend pip dependencies using pip directly."""
-        req_file = BASE_DIR / "backend" / "requirements.txt"
-        if not req_file.exists():
-            return
-        try:
-            r = subprocess.run(
-                ["cmd", "/c", "pip", "show", "uvicorn"],
-                capture_output=True, timeout=15)
+        """Create venv with Python 3.11 and install backend dependencies."""
+        req_file = os.path.join(BACKEND, "requirements.txt")
+        venv_dir = os.path.join(BACKEND, "venv")
+        venv_pip = os.path.join(venv_dir, "Scripts", "pip.exe")
+
+        # If venv already exists and has uvicorn, skip
+        if os.path.exists(venv_pip):
+            r = subprocess.run([venv_pip, "show", "uvicorn"],
+                               capture_output=True, timeout=15)
             if r.returncode == 0:
-                return  # already installed
-        except Exception:
-            pass
-        self._log("Installing backend dependencies — a terminal window will open, please wait for it to finish...", "warn")
+                return
+
+        # Find Python 3.11 using the py launcher or fallback
+        py311 = None
+        for candidate in ["py -3.11", "python3.11", "python"]:
+            try:
+                args = candidate.split()
+                r = subprocess.run(args + ["--version"],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    ver = r.stdout.strip() + r.stderr.strip()
+                    if "3.11" in ver or "3.10" in ver or "3.12" in ver:
+                        py311 = args
+                        break
+                    elif py311 is None:
+                        py311 = args  # fallback to whatever we find
+            except Exception:
+                continue
+
+        if py311 is None:
+            py311 = ["python"]
+
+        # Create venv if missing
+        if not os.path.exists(venv_pip):
+            self._log(f"Creating virtual environment...", "warn")
+            subprocess.run(py311 + ["-m", "venv", venv_dir],
+                           capture_output=True, timeout=60)
+
+        if not os.path.exists(venv_pip):
+            self._log("Could not create venv — trying system pip instead.", "warn")
+            venv_pip = "pip"
+
+        # Install dependencies
+        self._log("Installing backend dependencies (first run only, ~3-5 mins)...", "warn")
         try:
             proc = subprocess.Popen(
-                ["cmd", "/k", f"pip install -r \"{req_file}\" && echo DONE - You can close this window"],
-                creationflags=subprocess.CREATE_NEW_CONSOLE)
+                [venv_pip, "install", "-r", req_file],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, cwd=BACKEND)
+            for line in iter(proc.stdout.readline, ""):
+                line = line.strip()
+                if line and any(k in line for k in ("Collecting", "Installing", "Successfully", "error", "ERROR")):
+                    self._log(f"[pip] {line}", "warn")
             proc.wait()
-            self._log("Backend dependencies installed.", "success")
+            if proc.returncode == 0:
+                self._log("Backend dependencies installed.", "success")
+            else:
+                self._log("pip install finished (check above for any errors).", "warn")
         except Exception as e:
             self._log(f"pip install warning: {e}", "warn")
 
     def _ensure_npm_deps(self):
         """Run npm install in screensense-app if node_modules is missing."""
-        app_dir = BASE_DIR / "screensense-app"
-        modules_dir = app_dir / "node_modules"
-        if modules_dir.exists():
-            return  # already installed
-        self._log("Installing frontend dependencies — a terminal window will open, please wait for it to finish...", "warn")
+        app_dir = os.path.join(BASE, "screensense-app")
+        modules_dir = os.path.join(app_dir, "node_modules")
+        if os.path.exists(modules_dir):
+            return
+        self._log("Installing frontend dependencies (first run only, ~2 mins)...", "warn")
         try:
             proc = subprocess.Popen(
-                ["cmd", "/k", f"cd /d \"{app_dir}\" && npm install && echo DONE - You can close this window"],
-                creationflags=subprocess.CREATE_NEW_CONSOLE)
+                ["cmd", "/c", "npm", "install"],
+                cwd=app_dir,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+            for line in iter(proc.stdout.readline, ""):
+                line = line.strip()
+                if line and "warn" not in line.lower() and "npm" not in line.lower()[:4]:
+                    self._log(f"[npm] {line}", "warn")
             proc.wait()
             self._log("Frontend dependencies installed.", "success")
         except Exception as e:
