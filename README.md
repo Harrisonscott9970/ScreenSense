@@ -17,6 +17,15 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-ML-red)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-orange)
 
+## Demo Accounts
+Four pre-made test accounts are available to log in and explore the app immediately:
+| Email           | Password       |
+|-----------------|----------------|
+| user1@test.com  | ScreenSense1!  |
+| user2@test.com  | ScreenSense2!  |
+| user3@test.com  | ScreenSense3!  |
+| user4@test.com  | ScreenSense4!  |
+
 ---
 
 ## 1. Project Overview
