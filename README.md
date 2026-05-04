@@ -17,6 +17,18 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-ML-red)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-orange)
 
+## Prerequisites
+
+Before running ScreenSense, make sure the following are installed:
+
+| Tool | Version | Download |
+|------|---------|----------|
+| Python | 3.11+ | https://www.python.org/downloads/ |
+| Node.js | 18+ | https://nodejs.org/ |
+| Expo Go (phone) | Latest | App Store / Google Play |
+
+> **Windows users:** When installing Python, tick **"Add Python to PATH"** on the first installer screen. Without this, the control panel and backend will not start.
+
 ## Demo Accounts
 Four pre-made test accounts are available to log in and explore the app immediately:
 | Email           | Password       |
