@@ -1346,21 +1346,13 @@ class ControlPanel:
                 return  # already installed
         except Exception:
             pass
-        self._log("Installing backend dependencies — this may take 3-5 mins on first run...", "warn")
+        self._log("Installing backend dependencies — a terminal window will open, please wait for it to finish...", "warn")
         try:
             proc = subprocess.Popen(
-                ["cmd", "/c", "pip", "install", "-r", str(req_file)],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
-            for line in proc.stdout:
-                line = line.strip()
-                if line and ('Collecting' in line or 'Installing' in line or 'Successfully' in line):
-                    self._log(f"[pip] {line}", "warn")
+                ["cmd", "/k", f"pip install -r \"{req_file}\" && echo DONE - You can close this window"],
+                creationflags=subprocess.CREATE_NEW_CONSOLE)
             proc.wait()
-            if proc.returncode == 0:
-                self._log("Backend dependencies installed.", "success")
-            else:
-                self._log("pip install finished with warnings — continuing.", "warn")
+            self._log("Backend dependencies installed.", "success")
         except Exception as e:
             self._log(f"pip install warning: {e}", "warn")
 
@@ -1370,22 +1362,13 @@ class ControlPanel:
         modules_dir = app_dir / "node_modules"
         if modules_dir.exists():
             return  # already installed
-        self._log("Installing frontend dependencies — this may take 2-3 mins on first run...", "warn")
+        self._log("Installing frontend dependencies — a terminal window will open, please wait for it to finish...", "warn")
         try:
             proc = subprocess.Popen(
-                ["cmd", "/c", "npm", "install"],
-                cwd=str(app_dir),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
-            for line in proc.stdout:
-                line = line.strip()
-                if line and 'warn' not in line.lower():
-                    self._log(f"[npm] {line}", "warn")
+                ["cmd", "/k", f"cd /d \"{app_dir}\" && npm install && echo DONE - You can close this window"],
+                creationflags=subprocess.CREATE_NEW_CONSOLE)
             proc.wait()
-            if proc.returncode == 0:
-                self._log("Frontend dependencies installed.", "success")
-            else:
-                self._log("npm install finished with warnings — continuing.", "warn")
+            self._log("Frontend dependencies installed.", "success")
         except Exception as e:
             self._log(f"npm install warning: {e}", "warn")
 
